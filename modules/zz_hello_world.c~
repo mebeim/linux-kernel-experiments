@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/**
+ * Base module template for testing stuff...
+ */
+
+#include <linux/kernel.h>     // printk(), pr_*()
+#include <linux/module.h>     // THIS_MODULE, MODULE_VERSION, ...
+#include <linux/init.h>       // module_{init,exit}
+
+#ifdef pr_fmt
+#undef pr_fmt
+#endif
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+static int __init modinit(void) {
+	// fail insert to make testing faster (no need to rmmod)
+	return 1;
+}
+
+static void __exit modexit(void)
+{
+	// This function is only needed to be able to unload the module.
+}
+
+module_init(modinit);
+module_exit(modexit);
+MODULE_VERSION("0.1");
+MODULE_DESCRIPTION("Test module");
+MODULE_AUTHOR("Marco Bonelli");
+MODULE_LICENSE("Dual MIT/GPL");
