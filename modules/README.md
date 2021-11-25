@@ -29,14 +29,14 @@ All modules should compile for Linux v4.19 x86_64 with a simple `make`:
 make KDIR=path/to/kernel/dir -j
 ```
 
-Specific modules can be built overriding the `obj-m` variable:
+Specific modules can be built specifying their name in `ONLY=`:
 
 ```bash
-make KDIR=path/to/kernel/dir obj-m='cpuinfo.o datatime.o'
+make KDIR=path/to/kernel/dir ONLY='cpuinfo datetime'
 ```
 
 Modules in the `arm64` folder are ARM64-specific, so either use an ARM64 machine
-or cross-compile with `CROSS_COMPILE=aarch64-linux-gnu-`:
+or cross-compile with `CROSS_COMPILE=aarch64-linux-gnu-` (default behavior):
 
 ```bash
 cd arm64
