@@ -16,10 +16,10 @@ inherit_capability: inherit_capability.c
 mmap_devzero_wtf: mmap_devzero_wtf.c
 	$(CC) $^ -o $@
 
-test_scaling_governor: test_scaling_governor.c
+pagemap: pagemap.c
 	$(CC) $^ -o $@
 
-virt_to_phys: virt_to_phys.c
+test_scaling_governor: test_scaling_governor.c
 	$(CC) $^ -o $@
 
 x86_rtm_page_fault: x86_rtm_page_fault.c
