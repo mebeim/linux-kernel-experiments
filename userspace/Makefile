@@ -1,4 +1,5 @@
 BINS = $(patsubst %.c,%,$(wildcard *.c))
+CFLAGS = -Wall -Wextra -pedantic -O3
 
 .PHONY: all clean
 
@@ -8,19 +9,19 @@ clean:
 	rm -f $(BINS)
 
 alias_existing_page: alias_existing_page.c
-	$(CC) $^ -o $@
+	$(CC) $(CFLAGS) $^ -o $@
 
 inherit_capability: inherit_capability.c
-	$(CC) $^ -o $@ -lcap
+	$(CC) $(CFLAGS) $^ -o $@ -lcap
 
 mmap_devzero_wtf: mmap_devzero_wtf.c
-	$(CC) $^ -o $@
+	$(CC) $(CFLAGS) $^ -o $@
 
 pagemap: pagemap.c
-	$(CC) $^ -o $@
+	$(CC) $(CFLAGS) $^ -o $@
 
 test_scaling_governor: test_scaling_governor.c
-	$(CC) $^ -o $@
+	$(CC) $(CFLAGS) $^ -o $@
 
 x86_rtm_page_fault: x86_rtm_page_fault.c
-	$(CC) $^ -o $@ -mrtm
+	$(CC) $(CFLAGS) -O0 $^ -o $@ -mrtm
