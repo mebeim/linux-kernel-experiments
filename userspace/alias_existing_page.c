@@ -15,7 +15,6 @@
 
 int main(void) {
 	FILE *fp;
-	char *endp;
 	unsigned long addr, info, physaddr, val;
 	long off;
 	int fd;

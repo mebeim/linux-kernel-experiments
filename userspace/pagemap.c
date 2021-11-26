@@ -20,7 +20,7 @@
 
 void dump_pagemap(int pid, unsigned long vaddr) {
 	FILE *fp;
-	unsigned long info, physaddr;
+	unsigned long info;
 	char path[128];
 
 	sprintf(path, "/proc/%d/pagemap", pid);

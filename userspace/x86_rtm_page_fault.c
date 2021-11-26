@@ -12,7 +12,6 @@
 #include <immintrin.h>
 
 static int page_dirty(volatile unsigned char *p) {
-	int i;
 	unsigned status;
 
 	if ((status = _xbegin()) == _XBEGIN_STARTED) {
@@ -35,7 +34,6 @@ static int page_dirty(volatile unsigned char *p) {
 }
 
 int main(void) {
-	int res;
 	volatile unsigned char *addr;
 
 	addr = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
