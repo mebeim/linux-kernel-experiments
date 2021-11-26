@@ -4,6 +4,7 @@
  * not 0 you get a SIGBUS when trying to write to the mapping.
  *
  * Tested on: Linux Marco-Debian 4.9.0-16-amd64 #1 SMP Debian 4.9.272-2 (2021-07-19) x86_64 GNU/Linux
+ *            Linux Marco-Debian 5.10.0-9-amd64 #1 SMP Debian 5.10.70-1 (2021-09-30) x86_64 GNU/Linux
  */
 
 #include <stdio.h>
