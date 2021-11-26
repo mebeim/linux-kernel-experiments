@@ -11,10 +11,9 @@
 #include <sys/mman.h>
 #include <immintrin.h>
 
-static int page_dirty(void *page) {
+static int page_dirty(volatile unsigned char *p) {
 	int i;
 	unsigned status;
-	unsigned char *p = page;
 
 	if ((status = _xbegin()) == _XBEGIN_STARTED) {
 		*p = 0;
@@ -37,7 +36,7 @@ static int page_dirty(void *page) {
 
 int main(void) {
 	int res;
-	unsigned char *addr;
+	volatile unsigned char *addr;
 
 	addr = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (addr == MAP_FAILED) {
