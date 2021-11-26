@@ -66,15 +66,15 @@ void setup_affinity(void) {
 
 int main(int argc, char **argv) {
 	unsigned runs, cycles, delay;
-	double cur, tot1, tot2, min, max, avg;
+	double cur, tot1, tot2, min, max, avg = 0;
 
-	if (argc < 2 || sscanf(argv[1], "%i", &runs) != 1 || runs < 1)
+	if (argc < 2 || sscanf(argv[1], "%u", &runs) != 1 || runs < 1)
 		runs = DEFAULT_RUNS;
 
-	if (argc < 3 || sscanf(argv[2], "%i", &cycles) != 1 || cycles < 1)
+	if (argc < 3 || sscanf(argv[2], "%u", &cycles) != 1 || cycles < 1)
 		cycles = DEFAULT_CYCLES;
 
-	if (argc < 4 || sscanf(argv[3], "%i", &delay) != 1 || delay < 1)
+	if (argc < 4 || sscanf(argv[3], "%u", &delay) != 1 || delay < 1)
 		delay = DEFAULT_DELAY;
 
 	setup_affinity();
