@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: (GPL-2.0 OR MIT)
 /**
- * Walk the page table given a PID nad virtual address and find the physical
- * address, printing values/offsets of the entries for each page table level.
- * With dump=1 just dump the values of useful page table macros and exit.
+ * Walk the page table given a PID and virtual address and find the physical
+ * address, printing values/offsets/flags of the entries for each page table
+ * level. With dump=1 just dump the values of useful page table macros and exit.
  * Tested on kernel 5.10 x86_64.
  *
  * Usage: sudo insmod page_table_walk.ko pid=123 vaddr=0x1234
  *        sudo insmod page_table_walk.ko dump=1
  */
 
-#include <linux/kernel.h>     // pr_info(), pr_*()
-#include <linux/module.h>     // THIS_MODULE, MODULE_VERSION, ...
-#include <linux/init.h>       // module_{init,exit}
-#include <linux/pgtable.h>    // page table types/macros
-#include <linux/sched/task.h> // struct task_struct, {get,put}_task_struct()
+#include <linux/kernel.h>        // pr_info(), pr_*()
+#include <linux/module.h>        // THIS_MODULE, MODULE_VERSION, ...
+#include <linux/init.h>          // module_{init,exit}
+#include <linux/pgtable.h>       // page table types/macros
+#include <linux/sched/task.h>    // struct task_struct, {get,put}_task_struct()
+#include <asm/msr-index.h>       // MSR defines
+#include <asm/msr.h>             // r/w MSR funcs/macros
+#include <asm/special_insns.h>   // r/w control regs
+#include <asm/processor-flags.h> // control regs flags
+// #include <asm/pgtable_types.h>   //
 
 #ifdef pr_fmt
 #undef pr_fmt
@@ -41,6 +46,17 @@ static struct task_struct *get_user_pid_task(pid_t pid) {
 	return get_pid_task(find_get_pid(pid), PIDTYPE_PID);
 }
 
+static inline int rdmsrl_wrap(const char *name, int msrno, unsigned long long *pval)
+{
+	int err;
+
+	if ((err = rdmsrl_safe(msrno, pval)))
+		pr_err("rdmsrl_safe(%s) failed, aborting.\n", name);
+
+	return err;
+}
+#define RDMSR(msr, val) rdmsrl_wrap(#msr, msr, &(val))
+
 static void dump_macros(void)
 {
 	pr_info("PGDIR_SHIFT  = %d\n", PGDIR_SHIFT);
@@ -62,79 +78,171 @@ static void dump_macros(void)
 	pr_info("PAGE_OFFSET  = 0x%016lx\n", PAGE_OFFSET);
 }
 
-static void dump_pte_flags(pteval_t val)
+static bool dump_pgd(pgd_t pgd, unsigned long vaddr)
 {
-	pteval_t mask = _PAGE_PRESENT | _PAGE_RW | _PAGE_USER | _PAGE_ACCESSED
-			| _PAGE_DIRTY | _PAGE_SOFT_DIRTY | _PAGE_UFFD_WP
-			| _PAGE_NX;
+	pgdval_t val = pgd_val(pgd);
 
-	pr_info("pte flags:");
-
-	if (!(val & mask)) {
-		pr_cont(" no interesting flags");
-	} else {
-		if (val & _PAGE_PRESENT   ) pr_cont(" PRESENT");
-		if (val & _PAGE_RW        ) pr_cont(" RW");
-		if (val & _PAGE_USER      ) pr_cont(" USER");
-		if (val & _PAGE_ACCESSED  ) pr_cont(" ACCESSED");
-		if (val & _PAGE_DIRTY     ) pr_cont(" DIRTY");
-	#ifdef CONFIG_MEM_SOFT_DIRTY
-		if (val & _PAGE_SOFT_DIRTY) pr_cont(" SOFT_DIRTY");
-	#endif
-		if (val & _PAGE_UFFD_WP   ) pr_cont(" UFFD_WP");
-		if (val & _PAGE_NX        ) pr_cont(" NX");
+	if (pgd_none(pgd) || pgd_bad(pgd)) {
+		pr_info("pgd is %s\n", pgd_none(pgd) ? "none" : "bad");
+		return false;
 	}
 
-	pr_cont("\n");
+	pr_info("pgd: idx %03lx val %016lx\n", pgd_index(vaddr), val);
+
+	return true;
 }
 
-static void walk(struct task_struct *task, unsigned long vaddr)
+static bool dump_p4d(p4d_t p4d, unsigned long vaddr)
 {
-	pgd_t *pgd;
-	p4d_t *p4d;
-	pud_t *pud;
-	pmd_t *pmd;
-	pte_t *pte;
+	p4dval_t val = p4d_val(p4d);
 
-	pgd = pgd_offset(task->mm, vaddr);
-	pr_info("pgd: idx 0x%-3lx val 0x%lx\n", pgd_index(vaddr), pgd_val(*pgd));
-	if (pgd_none(*pgd) || pgd_bad(*pgd)) {
-		pr_info("pgd is %s\n", pgd_none(*pgd) ? "none" : "bad");
-		return;
+	if (p4d_none(p4d) || p4d_bad(p4d)) {
+		pr_info("p4d is %s\n", p4d_none(p4d) ? "none" : "bad");
+		return false;
 	}
 
-	p4d = p4d_offset(pgd, vaddr);
-	pr_info("p4d: idx 0x%-3lx val 0x%lx\n", p4d_index(vaddr), p4d_val(*p4d));
-	if (p4d_none(*p4d) || p4d_bad(*p4d)) {
-		pr_info("p4d is %s\n", p4d_none(*p4d) ? "none" : "bad");
-		return;
+	pr_info("p4d: idx %03lx val %016lx\n", p4d_index(vaddr), val);
+	return true;
+}
+
+static bool dump_pud(pud_t pud, unsigned long vaddr)
+{
+	pudval_t val = pud_val(pud);
+
+	if (pud_none(pud) || pud_bad(pud)) {
+		pr_info("pud is %s\n", pud_none(pud) ? "none" : "bad");
+		return false;
 	}
 
-	pud = pud_offset(p4d, vaddr);
-	pr_info("pud: idx 0x%-3lx val 0x%lx\n", pud_index(vaddr), pud_val(*pud));
-	if (pud_none(*pud) || pud_bad(*pud)) {
-		pr_info("pud is %s\n", pud_none(*pud) ? "none" : "bad");
-		return;
+	pr_info("pud: idx %03lx val %016lx\n", pud_index(vaddr), val);
+	return true;
+}
+
+static bool dump_pmd(pmd_t pmd, unsigned long vaddr)
+{
+	pmdval_t val = pmd_val(pmd);
+
+	if (pmd_none(pmd) || pmd_bad(pmd)) {
+		pr_info("pmd is %s\n", pmd_none(pmd) ? "none" : "bad");
+		return false;
 	}
 
-	pmd = pmd_offset(pud, vaddr);
-	pr_info("pmd: idx 0x%-3lx val 0x%lx\n", pmd_index(vaddr), pmd_val(*pmd));
-	if (pmd_none(*pmd) || pmd_bad(*pmd)) {
-		pr_info("pmd is %s\n", pmd_none(*pmd) ? "none" : "bad");
-		return;
-	}
+	pr_info("pmd: idx %03lx val %016lx\n", pmd_index(vaddr), val);
+	return true;
+}
 
-	pte = pte_offset_kernel(pmd, vaddr);
-	pr_info("pte: idx 0x%-3lx val 0x%lx\n", pte_index(vaddr), pte_val(*pte));
-	if (pte_none(*pte)) {
+static void dump_pte(pte_t pte, unsigned long vaddr, bool pke)
+{
+	pteval_t val = pte_val(pte);
+
+	if (pte_none(pte)) {
 		pr_info("pte is none\n");
 		return;
 	}
 
-	dump_pte_flags(pte_val(*pte));
+	pr_info("pte: idx %03lx val %016lx", pte_index(vaddr), val);
 
-	pr_info("paddr: 0x%lx\n",
-		(pte_pfn(*pte) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
+	if (val & _PAGE_PRESENT   ) pr_cont(" PRESENT");
+	if (val & _PAGE_RW        ) pr_cont(" RW");
+	if (val & _PAGE_USER      ) pr_cont(" USER");
+	else                        pr_cont(" KERNEL");
+	if (val & _PAGE_PWT       ) pr_cont(" PWT");
+	if (val & _PAGE_PCD       ) pr_cont(" PCD");
+	if (val & _PAGE_ACCESSED  ) pr_cont(" ACCESSED");
+	if (val & _PAGE_DIRTY     ) pr_cont(" DIRTY");
+	if (val & _PAGE_PAT       ) pr_cont(" PAT");
+	if (val & _PAGE_GLOBAL    ) pr_cont(" GLOBAL");
+#ifdef CONFIG_HAVE_ARCH_USERFAULTFD_WP
+	if (val & _PAGE_UFFD_WP   ) pr_cont(" UFFD_WP");
+#endif
+#ifdef CONFIG_MEM_SOFT_DIRTY
+	if (val & _PAGE_SOFT_DIRTY) pr_cont(" SOFT_DIRTY");
+#endif
+	if (val & _PAGE_NX        ) pr_cont(" NX");
+	if (pke                   ) pr_cont(" PKEY=%lx", (val & _PAGE_PKEY_MASK) >> _PAGE_BIT_PKEY_BIT0);
+	pr_cont("\n");
+
+	pr_info("paddr: 0x%lx\n", (pte_pfn(pte) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
+}
+
+static void walk_4l(const struct task_struct *task, unsigned long vaddr, bool pke, p4d_t *p4d)
+{
+	pgd_t *pgd;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *pte;
+
+	if (!p4d) {
+		// We are doing a pure 4-level walk, start from pgd
+		pgd = pgd_offset(task->mm, vaddr);
+		if (!dump_pgd(*pgd, vaddr))
+			return;
+
+		p4d = p4d_offset(pgd, vaddr);
+		// Do not dump p4d since p4d == pgd in this case
+	}
+
+	pud = pud_offset(p4d, vaddr);
+	if (!dump_pud(*pud, vaddr))
+		return;
+
+	pmd = pmd_offset(pud, vaddr);
+	if (!dump_pmd(*pmd, vaddr))
+		return;
+
+	pte = pte_offset_kernel(pmd, vaddr);
+	dump_pte(*pte, vaddr, pke);
+}
+
+static void walk_5l(const struct task_struct *task, unsigned long vaddr, bool pke)
+{
+	pgd_t *pgd;
+	p4d_t *p4d;
+
+	pgd = pgd_offset(task->mm, vaddr);
+	if (!dump_pgd(*pgd, vaddr))
+		return;
+
+	p4d = p4d_offset(pgd, vaddr);
+	if (!dump_p4d(*p4d, vaddr))
+		return;
+
+	walk_4l(task, vaddr, pke, p4d);
+}
+
+void walk(const struct task_struct *task, unsigned long vaddr)
+{
+	unsigned long long efer;
+	unsigned long cr4;
+	bool pke = 0;
+
+	if (RDMSR(MSR_EFER, efer))
+		return;
+
+	if ((efer & (EFER_LME|EFER_LMA)) != (EFER_LME|EFER_LMA)) {
+		pr_err("Not in IA-32e mode, aborting.\n");
+		return;
+	}
+
+	if (!(read_cr0() & X86_CR0_PG)) {
+		pr_err("Paging disabled, aborting.\n");
+		return;
+	}
+
+	cr4 = __read_cr4();
+	if (!(cr4 & X86_CR4_PAE)) {
+		pr_err("PAE disabled, aborting.\n");
+		return;
+	}
+
+#ifdef CONFIG_X86_INTEL_MEMORY_PROTECTION_KEYS
+	pke = (cr4 & X86_CR4_PKE) != 0;
+#endif
+
+	if (cr4 & X86_CR4_LA57)
+		walk_5l(task, vaddr, pke);
+	else
+		walk_4l(task, vaddr, pke, NULL);
 }
 
 static int __init page_table_walk_init(void)
@@ -164,12 +272,12 @@ static int __init page_table_walk_init(void)
 out:
 	// Just fail loading with a random error to make it simpler to use this
 	// module multiple times in a row.
-	return -123;
+	return -ECANCELED;
 }
 
 module_init(page_table_walk_init);
-MODULE_VERSION("0.2");
-MODULE_DESCRIPTION("Walk the page table and dump entries given a PID and a"
-		   "virtual address");
+MODULE_VERSION("0.3");
+MODULE_DESCRIPTION("Walk the page table and dump entries and flags given a PID "
+		   "and a virtual address");
 MODULE_AUTHOR("Marco Bonelli");
 MODULE_LICENSE("Dual MIT/GPL");
