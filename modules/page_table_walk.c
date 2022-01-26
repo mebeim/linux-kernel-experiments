@@ -14,7 +14,7 @@
 #include <linux/kernel.h>        // pr_info(), pr_*()
 #include <linux/module.h>        // THIS_MODULE, MODULE_VERSION, ...
 #include <linux/init.h>          // module_{init,exit}
-#include <linux/pgtable.h>       // page table types/macros
+#include <linux/pgtable.h>       // page table types/macros, ZERO_PAGE macro
 #include <linux/sched/task.h>    // struct task_struct, {get,put}_task_struct()
 #include <asm/msr-index.h>       // MSR defines
 #include <asm/msr.h>             // r/w MSR funcs/macros
@@ -25,6 +25,8 @@
 #undef pr_fmt
 #endif
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#define IS_ZERO_PAGE(pa) ((pa) == (page_to_pfn(ZERO_PAGE(0)) << PAGE_SHIFT))
 
 static int user_pid = -1;
 module_param_named(pid, user_pid, int, 0);
@@ -120,6 +122,11 @@ static void dump_page_flags_last_level(unsigned long val, bool pke)
 			(val & _PAGE_PKEY_MASK) >> _PAGE_BIT_PKEY_BIT0);
 }
 
+static void dump_paddr(unsigned long paddr) {
+	pr_info("paddr: 0x%lx%s\n", paddr,
+		IS_ZERO_PAGE(paddr & PAGE_MASK) ? " (zero page)" : "");
+}
+
 static bool dump_pgd(pgd_t pgd, unsigned long vaddr)
 {
 	pgdval_t val = pgd_val(pgd);
@@ -168,10 +175,7 @@ static bool dump_pud(pud_t pud, unsigned long vaddr, bool pke)
 		pr_cont(" 1G");
 		dump_page_flags_last_level((unsigned long)val, pke);
 		pr_cont("\n");
-
-		pr_info("paddr: 0x%lx\n",
-			(pud_pfn(pud) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
-
+		dump_paddr((pud_pfn(pud) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
 		return false;
 	}
 
@@ -195,10 +199,7 @@ static bool dump_pmd(pmd_t pmd, unsigned long vaddr, bool pke)
 		pr_cont(" 2M");
 		dump_page_flags_last_level((unsigned long)val, pke);
 		pr_cont("\n");
-
-		pr_info("paddr: 0x%lx\n",
-			(pmd_pfn(pmd) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
-
+		dump_paddr((pmd_pfn(pmd) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
 		return false;
 	}
 
@@ -223,9 +224,7 @@ static void dump_pte(pte_t pte, unsigned long vaddr, bool pke)
 
 	dump_page_flags_last_level((unsigned long)val, pke);
 	pr_cont("\n");
-
-	pr_info("paddr: 0x%lx\n",
-		(pte_pfn(pte) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
+	dump_paddr((pte_pfn(pte) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
 }
 
 static void walk_4l(const struct task_struct *task, unsigned long vaddr,
