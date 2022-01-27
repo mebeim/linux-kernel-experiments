@@ -32,8 +32,8 @@ static int user_pid = -1;
 module_param_named(pid, user_pid, int, 0);
 MODULE_PARM_DESC(pid, "User PID of the process to inspect (-1 for current)");
 
-static long vaddr;
-module_param_named(vaddr, vaddr, long, 0);
+static unsigned long vaddr;
+module_param_named(vaddr, vaddr, ulong, 0);
 MODULE_PARM_DESC(vaddr, "Virtual address to use for page table walk");
 
 static bool dump;
@@ -131,41 +131,41 @@ static bool dump_pgd(pgd_t pgd, unsigned long vaddr)
 {
 	pgdval_t val = pgd_val(pgd);
 
-	if (pgd_none(pgd) || pgd_bad(pgd)) {
-		pr_info("pgd is %s\n", pgd_none(pgd) ? "none" : "bad");
-		return false;
+	if (!pgd_present(pgd)) {
+		pr_info("pgd not present\n");
+		return true;
 	}
 
 	pr_info("pgd: idx %03lx val %016lx", pgd_index(vaddr), val);
 	dump_page_flags_common((unsigned long)val);
 	pr_cont("\n");
 
-	return true;
+	return false;
 }
 
 static bool dump_p4d(p4d_t p4d, unsigned long vaddr)
 {
 	p4dval_t val = p4d_val(p4d);
 
-	if (p4d_none(p4d) || p4d_bad(p4d)) {
-		pr_info("p4d is %s\n", p4d_none(p4d) ? "none" : "bad");
-		return false;
+	if (!p4d_present(p4d)) {
+		pr_info("p4d not present\n");
+		return true;
 	}
 
 	pr_info("p4d: idx %03lx val %016lx", p4d_index(vaddr), val);
 	dump_page_flags_common((unsigned long)val);
 	pr_cont("\n");
 
-	return true;
+	return false;
 }
 
 static bool dump_pud(pud_t pud, unsigned long vaddr, bool pke)
 {
 	pudval_t val = pud_val(pud);
 
-	if (pud_none(pud) || (pud_bad(pud) && !pud_huge(pud))) {
-		pr_info("pud is %s\n", pud_none(pud) ? "none" : "bad");
-		return false;
+	if (!pud_present(pud)) {
+		pr_info("pud not present\n");
+		return true;
 	}
 
 	pr_info("pud: idx %03lx val %016lx", pud_index(vaddr), val);
@@ -173,23 +173,26 @@ static bool dump_pud(pud_t pud, unsigned long vaddr, bool pke)
 
 	if (pud_huge(pud)) {
 		pr_cont(" 1G");
+		if (val & _PAGE_PAT_LARGE)
+			pr_cont(" PAT");
+
 		dump_page_flags_last_level((unsigned long)val, pke);
 		pr_cont("\n");
 		dump_paddr((pud_pfn(pud) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
-		return false;
+		return true;
 	}
 
 	pr_cont("\n");
-	return true;
+	return false;
 }
 
 static bool dump_pmd(pmd_t pmd, unsigned long vaddr, bool pke)
 {
 	pmdval_t val = pmd_val(pmd);
 
-	if (pmd_none(pmd) || (pmd_bad(pmd) && !pmd_huge(pmd))) {
-		pr_info("pmd is %s\n", pmd_none(pmd) ? "none" : "bad");
-		return false;
+	if (!pmd_present(pmd)) {
+		pr_info("pmd not present\n");
+		return true;
 	}
 
 	pr_info("pmd: idx %03lx val %016lx", pmd_index(vaddr), val);
@@ -197,22 +200,25 @@ static bool dump_pmd(pmd_t pmd, unsigned long vaddr, bool pke)
 
 	if (pmd_huge(pmd)) {
 		pr_cont(" 2M");
+		if (val & _PAGE_PAT_LARGE)
+			pr_cont(" PAT");
+
 		dump_page_flags_last_level((unsigned long)val, pke);
 		pr_cont("\n");
 		dump_paddr((pmd_pfn(pmd) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
-		return false;
+		return true;
 	}
 
 	pr_cont("\n");
-	return true;
+	return false;
 }
 
 static void dump_pte(pte_t pte, unsigned long vaddr, bool pke)
 {
 	pteval_t val = pte_val(pte);
 
-	if (pte_none(pte)) {
-		pr_info("pte is none\n");
+	if (!pte_present(pte)) {
+		pr_info("pte not present\n");
 		return;
 	}
 
@@ -227,7 +233,7 @@ static void dump_pte(pte_t pte, unsigned long vaddr, bool pke)
 	dump_paddr((pte_pfn(pte) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
 }
 
-static void walk_4l(const struct task_struct *task, unsigned long vaddr,
+static void walk_4l(const struct mm_struct *mm, unsigned long vaddr,
 		    bool pke, p4d_t *p4d)
 {
 	pgd_t *pgd;
@@ -237,8 +243,8 @@ static void walk_4l(const struct task_struct *task, unsigned long vaddr,
 
 	if (!p4d) {
 		// We are doing a pure 4-level walk, start from pgd
-		pgd = pgd_offset(task->mm, vaddr);
-		if (!dump_pgd(*pgd, vaddr))
+		pgd = pgd_offset(mm, vaddr);
+		if (dump_pgd(*pgd, vaddr))
 			return;
 
 		p4d = p4d_offset(pgd, vaddr);
@@ -246,35 +252,35 @@ static void walk_4l(const struct task_struct *task, unsigned long vaddr,
 	}
 
 	pud = pud_offset(p4d, vaddr);
-	if (!dump_pud(*pud, vaddr, pke))
+	if (dump_pud(*pud, vaddr, pke))
 		return;
 
 	pmd = pmd_offset(pud, vaddr);
-	if (!dump_pmd(*pmd, vaddr, pke))
+	if (dump_pmd(*pmd, vaddr, pke))
 		return;
 
 	pte = pte_offset_kernel(pmd, vaddr);
 	dump_pte(*pte, vaddr, pke);
 }
 
-static void walk_5l(const struct task_struct *task, unsigned long vaddr,
+static void walk_5l(const struct mm_struct *mm, unsigned long vaddr,
 		    bool pke)
 {
 	pgd_t *pgd;
 	p4d_t *p4d;
 
-	pgd = pgd_offset(task->mm, vaddr);
-	if (!dump_pgd(*pgd, vaddr))
+	pgd = pgd_offset(mm, vaddr);
+	if (dump_pgd(*pgd, vaddr))
 		return;
 
 	p4d = p4d_offset(pgd, vaddr);
-	if (!dump_p4d(*p4d, vaddr))
+	if (dump_p4d(*p4d, vaddr))
 		return;
 
-	walk_4l(task, vaddr, pke, p4d);
+	walk_4l(mm, vaddr, pke, p4d);
 }
 
-void walk(const struct task_struct *task, unsigned long vaddr)
+void walk(const struct mm_struct *mm, unsigned long vaddr)
 {
 	unsigned long long efer;
 	unsigned long cr4;
@@ -304,14 +310,15 @@ void walk(const struct task_struct *task, unsigned long vaddr)
 #endif
 
 	if (cr4 & X86_CR4_LA57)
-		walk_5l(task, vaddr, pke);
+		walk_5l(mm, vaddr, pke);
 	else
-		walk_4l(task, vaddr, pke, NULL);
+		walk_4l(mm, vaddr, pke, NULL);
 }
 
 static int __init page_table_walk_init(void)
 {
 	struct task_struct *task;
+	struct mm_struct *mm;
 
 	if (dump) {
 		dump_macros();
@@ -324,13 +331,31 @@ static int __init page_table_walk_init(void)
 	} else {
 		task = get_user_pid_task(user_pid);
 		if (task == NULL) {
-			pr_err("No process with user PID = %d.\n", user_pid);
-			return -ESRCH; // No such process.
+			pr_err("No task with user PID = %d.\n", user_pid);
+			return -ESRCH;
 		}
 	}
 
 	pr_info("Examining %s[%d] vaddr 0x%lx\n", task->comm, task->pid, vaddr);
-	walk(task, vaddr);
+
+	if (!(mm = task->mm)) {
+		mm = task->active_mm;
+
+		if (!mm) {
+			// This will happen if we try to inspect page tables of
+			// kthreads since those do not have their own mm;
+			// instead they have an active_mm stolen from some other
+			// task, but only if they are *currently running* (good
+			// luck trying to catch those). Indeed it does not make
+			// much sense to inspect kthread page tables.
+			pr_err("Task has no own mm nor active mm, aborting.\n");
+			return -ESRCH;
+		}
+
+		pr_warn("Task does not have own mm, using active_mm.\n");
+	}
+
+	walk(mm, vaddr);
 	put_task_struct(task);
 
 out:
@@ -340,7 +365,7 @@ out:
 }
 
 module_init(page_table_walk_init);
-MODULE_VERSION("0.3");
+MODULE_VERSION("0.4");
 MODULE_DESCRIPTION("Walk the page table and dump entries and flags given a PID "
 		   "and a virtual address");
 MODULE_AUTHOR("Marco Bonelli");
