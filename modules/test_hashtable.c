@@ -28,6 +28,7 @@ struct mystruct {
 
 DECLARE_HASHTABLE(tbl, 3);
 
+#ifndef CONFIG_XXHASH
 static u32 mystupidhash(const char *s) {
 	u32 key = 0;
 	char c;
@@ -37,6 +38,7 @@ static u32 mystupidhash(const char *s) {
 
 	return key;
 }
+#endif
 
 static int __init myhashtable_init(void)
 {

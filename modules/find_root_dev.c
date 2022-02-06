@@ -16,6 +16,15 @@
 #include <linux/version.h>    // LINUX_VERSION_CODE, KERNEL_VERSION
 #include <uapi/linux/fcntl.h> // AT_*
 
+// FIXME: find a replacement for bdget()?
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0)
+#error "since Linux v5.10, bdget() is not exported anymore"
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,9,0)
+#include <linux/blkdev.h> // bd{get,put}(), BDEVNAME_SIZE
+#endif
+
 #ifdef pr_fmt
 #undef pr_fmt
 #endif
