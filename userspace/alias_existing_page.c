@@ -1,7 +1,7 @@
 /**
  * Get the physical address of an existing virtual memory page and map it,
  * effectively creating an "alias" for an existing page at a different virtual
- * addres.
+ * address.
  *
  * Sparkled from: https://stackoverflow.com/questions/67781437
  */
@@ -76,7 +76,7 @@ int main(void) {
 
 	mem = mmap(NULL, 0x1000, PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS, fd, physaddr);
 	if (mem == MAP_FAILED) {
-		perror("Failed to open \"/dev/mem\"");
+		perror("mmapping \"/dev/mem\" failed");
 		return 1;
 	}
 
