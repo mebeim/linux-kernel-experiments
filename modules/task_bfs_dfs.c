@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: (GPL-2.0 OR MIT)
 /**
- * Iterate over a task's children using BFS. Tested on kernel 4.19.
+ * Iterate and dump a task's children tree using BFS or DFS.
+ * Tested on kernel 5.10.
  * Usage: sudo insmod task_bfs.ko pid=123
  *        sudo modprobe task_bfs pid=123
  * Sparkled from: https://stackoverflow.com/questions/61201560 (sadly deleted by
- * the user)
+ * the user), also posted here: https://stackoverflow.com/questions/19208487.
  */
 
 #include <linux/kernel.h>      // printk(), pr_*()
 #include <linux/module.h>      // THIS_MODULE, MODULE_VERSION, ...
 #include <linux/init.h>        // module_{init,exit}
 #include <linux/list.h>        // struct list_head, list_for_each()
-#include <linux/sched.h>       // struct task_struct, {get,put}_task_struct()
+#include <linux/sched/task.h>  // struct task_struct, {get,put}_task_struct()
 #include <linux/slab.h>        // kmalloc(), kfree()
 #include <linux/pid.h>         // struct pid, get_pid_task(), find_get_pid()
 #include <linux/moduleparam.h> // module_param_named()
@@ -22,7 +23,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 static int user_pid;
-module_param_named(pid, user_pid, int, 0);
+module_param_named(pid, user_pid, int, 1);
 
 struct queue {
 	struct task_struct *task;
@@ -38,39 +39,79 @@ static struct task_struct *get_user_pid_task(pid_t pid) {
 	return get_pid_task(find_get_pid(pid), PIDTYPE_PID);
 }
 
-static void bfs(struct task_struct *task) {
+// Undefine to use DFS instead
+#define BFS
+#ifdef BFS
+#define TECHNIQUE "BFS"
+#else
+#define TECHNIQUE "DFS"
+#endif
+
+static void dump_children_tree(struct task_struct *task) {
 	struct task_struct *child;
 	struct list_head *list;
-	struct queue *q, *tmp, **tail;
+	struct queue *q, *tmp;
+#ifdef BFS
+	struct queue **tail;
+#endif
+	pid_t ppid;
 
 	q = kmalloc(sizeof *q, GFP_KERNEL);
+	if (!q)
+		goto out_nomem;
+
 	q->task = task;
 	q->next = NULL;
+#ifdef BFS
 	tail = &q->next;
+#endif
 
-	while (q != NULL) {
+	while (q) {
 		task = q->task;
+#ifndef BFS
+		tmp = q;
+		q = q->next;
+		kfree(tmp);
+#endif
 
-		pr_info("Name: %-20s State: 0x%lx\tPID: %d\n",
-			task->comm,
-			task->state,
-			task->pid
-		);
+		rcu_read_lock();
+		ppid = rcu_dereference(task->real_parent)->pid;
+		rcu_read_unlock();
+
+		pr_info("Name: %-20s State: %ld\tPID: %d\tPPID: %d\n",
+			task->comm, task->state, task->pid, ppid);
 
 		list_for_each(list, &task->children) {
 			child = list_entry(list, struct task_struct, sibling);
 			get_task_struct(child);
 
 			tmp = kmalloc(sizeof *tmp, GFP_KERNEL);
-			tmp->task = child;
-			tmp->next = NULL;
+			if (!tmp)
+				goto out_nomem;
 
+			tmp->task = child;
+#ifdef BFS
+			tmp->next = NULL;
 			*tail = tmp;
 			tail = &tmp->next;
+#else // DFS
+			tmp->next = q;
+			q = tmp;
+#endif
 		}
 
 		put_task_struct(task);
+#ifdef BFS
+		tmp = q;
+		q = q->next;
+		kfree(tmp);
+#endif
+	}
 
+	return;
+
+out_nomem:
+	while (q) {
 		tmp = q;
 		q = q->next;
 		kfree(tmp);
@@ -81,30 +122,24 @@ static int __init modinit(void)
 {
 	struct task_struct *tsk;
 
-	pr_info("init\n");
-
-	tsk = get_user_pid_task(user_pid); // Automatically calls get_task_struct(tsk) for us.
+	tsk = get_user_pid_task(user_pid);
 	if (tsk == NULL) {
 		pr_err("No process with user PID = %d.\n", user_pid);
-		return -ESRCH; // No such process.
+		return -ESRCH;
 	}
 
-	pr_info("Running BFS on task \"%s\" (PID: %d)\n", tsk->comm, tsk->pid);
+	pr_info("Running %s on task \"%s\" (PID: %d)\n", TECHNIQUE, tsk->comm,
+		tsk->pid);
 
-	bfs(tsk); // Automatically calls put_task_struct(tsk) for us.
+	dump_children_tree(tsk);
 
-	return 0;
-}
-
-static void __exit modexit(void)
-{
-	// This function is only needed to be able to unload the module.
-	pr_info("exit\n");
+	// Just fail loading with a random error to make it simpler to use this
+	// module multiple times in a row.
+	return -ECANCELED;
 }
 
 module_init(modinit);
-module_exit(modexit);
-MODULE_VERSION("0.1");
+MODULE_VERSION("0.2");
 MODULE_DESCRIPTION("Iterate over a task's children using BFS.");
 MODULE_AUTHOR("Marco Bonelli");
 MODULE_LICENSE("Dual MIT/GPL");
