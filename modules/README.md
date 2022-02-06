@@ -33,12 +33,11 @@ specifying their name in `ONLY=`:
 make KDIR=path/to/kernel/dir ONLY='cpuinfo datetime'
 ```
 
-Modules in the `arm64` folder are ARM64-specific, so either use an ARM64 machine
-or cross-compile with `CROSS_COMPILE=aarch64-linux-gnu-` (default behavior):
+Modules in the `arm64` directory are ARM64-specific, so either use an ARM64
+machine or cross-compile specifying your toolchain prefix
 
 ```bash
-cd arm64
-make KDIR=path/to/kernel/dir -j
+make KDIR=path/to/kernel/dir CROSS_COMPILE=aarch64-linux-gnu-
 ```
 
 [q19208487]: https://stackoverflow.com/q/19208487/3889449
