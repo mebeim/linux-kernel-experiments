@@ -1,3 +1,5 @@
+import cpp
+
 /* Get kmalloc slab size rounding up provided size. */
 bindingset[size]
 string kmallocSlab(int size) {
@@ -14,4 +16,24 @@ string kmallocSlab(int size) {
 	or size > 16   and size <= 32   and result = "kmalloc-32"
 	or size > 8    and size <= 16   and result = "kmalloc-16"
 	or size > 0    and size <= 8    and result = "kmalloc-8"
+}
+
+class KernelFunc extends Function {
+	/* Whether this function is declared with __attribute__((section(sec))) */
+	bindingset[sec]
+	predicate isInSection(string sec) {
+		exists(Attribute a |
+			a = this.getAnAttribute()
+			and a.hasName("section")
+			and a.getArgument(0).getValueText() = sec
+		)
+	}
+
+	/* Whether this function is declared with __attribute__((always_inline)) */
+	predicate isAlwaysInline() {
+		exists(Attribute a |
+			a = this.getAnAttribute()
+			and a.hasName("always_inline")
+		)
+	}
 }
