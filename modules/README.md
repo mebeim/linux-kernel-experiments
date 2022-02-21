@@ -1,7 +1,7 @@
 ## About
 
 These are simple Linux kernel modules written for educational purposes, some of
-which were written while answering StackOverflow questions on the
+which were written while answering/browsing StackOverflow questions on the
 `[linux-kernel]` tag.
 
 | Module                                             | Description                                                                | Kernel version | SO question?                                 |
@@ -11,7 +11,7 @@ which were written while answering StackOverflow questions on the
 | [`cpufreq.c`](cpufreq.c)                           | Get CPU frequency for currently online CPUs                                | 5.10           | [64111116][q64111116]                        |
 | [`cpuinfo.c`](cpuinfo.c)                           | Get CPU core ID from current CPU ID                                        | 5.10           | [61349444][q61349444]                        |
 | [`datetime.c`](datetime.c)                         | Get current date and time from kernel space taking into account time zone  | 5.10           | -                                            |
-| [`enum_pids.c`](enum_pids.c)                       | Enumerate all the tasks that have a given PID as pid, tgid, pgid or sid    | 5.6            | [67235938][q67235938]                        |
+| [`enum_pids.c`](enum_pids.c)                       | Enumerate all the tasks that have a given PID as pid, tgid, pgid or sid    | 5.10           | [67235938][q67235938], [71204947][q71204947] |
 | [`find_root_dev.c`](find_root_dev.c)               | Find the device where root (/) is mounted and its name                     | 4.19           | [60878209][q60878209]                        |
 | [`kallsyms.c`](kallsyms.c)                         | Lookup kallsyms from kernel space                                          | 4.19           | -                                            |
 | [`page_table_walk.c`](page_table_walk.c)           | Walk the page table and dump entries given a PID and a virtual address     | 5.10           | -                                            |
@@ -51,3 +51,4 @@ make KDIR=path/to/kernel/dir CROSS_COMPILE=aarch64-linux-gnu-
 [q64670766]: https://stackoverflow.com/q/64670766/3889449
 [q67224020]: https://stackoverflow.com/q/67224020/3889449
 [q67235938]: https://stackoverflow.com/q/67235938/3889449
+[q71204947]: https://stackoverflow.com/q/71204947/3889449
