@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: (GPL-2.0 OR MIT)
 /**
- * Walk the page table given a PID and virtual address and find the physical
- * address, printing values/offsets/flags of the entries for each page table
- * level. With dump=1 just dump the values of useful page table macros and exit.
- * This module was written for x86_64. The correspondence between page table
- * types and Intel doc is: pgd=PML5E, p4d=PML4E, pud=PDPTE, pmd=PDE, pte=PTE.
- * Tested on kernel 5.10 x86_64.
+ * Walk user/kernel page tables given a virtual address (plus PID for user page
+ * tables) and find the physical address, printing values/offsets/flags of the
+ * entries for each page table level. With dump=1 just dump the values of useful
+ * page table macros and exit. This module was written for x86_64. The
+ * correspondence between page table types and Intel doc is: pgd=PML5E,
+ * p4d=PML4E, pud=PDPTE, pmd=PDE, pte=PTE. Tested on kernel 5.10 x86_64.
  *
- * Usage: sudo insmod page_table_walk.ko pid=123 vaddr=0x1234
+ * Usage: sudo insmod page_table_walk.ko pid=123 vaddr=0x1234  # user
+ *        sudo insmod page_table_walk.ko pid=0 vaddr=0x1234    # kernel
  *        sudo insmod page_table_walk.ko dump=1
  */
 
@@ -20,6 +21,7 @@
 #include <asm/msr.h>             // r/w MSR funcs/macros
 #include <asm/special_insns.h>   // r/w control regs
 #include <asm/processor-flags.h> // control regs flags
+#include <asm/io.h>              // phys_to_virt()
 
 #ifdef pr_fmt
 #undef pr_fmt
@@ -30,7 +32,7 @@
 
 static int user_pid = -1;
 module_param_named(pid, user_pid, int, 0);
-MODULE_PARM_DESC(pid, "User PID of the process to inspect (-1 for current)");
+MODULE_PARM_DESC(pid, "User PID of the process to inspect (-1 for current, 0 for kernel)");
 
 static unsigned long vaddr;
 module_param_named(vaddr, vaddr, ulong, 0);
@@ -233,76 +235,74 @@ static void dump_pte(pte_t pte, unsigned long vaddr, bool pke)
 	dump_paddr((pte_pfn(pte) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
 }
 
-static void walk_4l(const struct mm_struct *mm, unsigned long vaddr,
-		    bool pke, p4d_t *p4d)
+static void walk_4l(pgd_t *pgdp, unsigned long vaddr, bool pke, p4d_t *p4dp)
 {
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmd;
-	pte_t *pte;
+	pud_t *pudp;
+	pmd_t *pmdp;
+	pte_t *ptep;
 
-	if (!p4d) {
+	if (!p4dp) {
 		// We are doing a pure 4-level walk, start from pgd
-		pgd = pgd_offset(mm, vaddr);
-		if (dump_pgd(*pgd, vaddr))
+		if (dump_pgd(*pgdp, vaddr))
 			return;
 
-		p4d = p4d_offset(pgd, vaddr);
+		p4dp = p4d_offset(pgdp, vaddr);
 		// Do not dump p4d since p4d == pgd in this case
 	}
 
-	pud = pud_offset(p4d, vaddr);
-	if (dump_pud(*pud, vaddr, pke))
+	pudp = pud_offset(p4dp, vaddr);
+	if (dump_pud(*pudp, vaddr, pke))
 		return;
 
-	pmd = pmd_offset(pud, vaddr);
-	if (dump_pmd(*pmd, vaddr, pke))
+	pmdp = pmd_offset(pudp, vaddr);
+	if (dump_pmd(*pmdp, vaddr, pke))
 		return;
 
-	pte = pte_offset_kernel(pmd, vaddr);
-	dump_pte(*pte, vaddr, pke);
+	ptep = pte_offset_kernel(pmdp, vaddr);
+	dump_pte(*ptep, vaddr, pke);
 }
 
-static void walk_5l(const struct mm_struct *mm, unsigned long vaddr,
-		    bool pke)
+static void walk_5l(pgd_t *pgdp, unsigned long vaddr, bool pke)
 {
-	pgd_t *pgd;
-	p4d_t *p4d;
+	p4d_t *p4dp;
 
-	pgd = pgd_offset(mm, vaddr);
-	if (dump_pgd(*pgd, vaddr))
+	if (dump_pgd(*pgdp, vaddr))
 		return;
 
-	p4d = p4d_offset(pgd, vaddr);
-	if (dump_p4d(*p4d, vaddr))
+	p4dp = p4d_offset(pgdp, vaddr);
+	if (dump_p4d(*p4dp, vaddr))
 		return;
 
-	walk_4l(mm, vaddr, pke, p4d);
+	walk_4l(pgdp, vaddr, pke, p4dp);
 }
 
-void walk(const struct mm_struct *mm, unsigned long vaddr)
+static int walk(pgd_t *pgdp, unsigned long vaddr)
 {
 	unsigned long long efer;
 	unsigned long cr4;
 	bool pke = false;
+	int err;
 
-	if (RDMSR(MSR_EFER, efer))
-		return;
+	// Not sure how much sense it makes to do all these checks. Some are
+	// redundant as this module wouldn't even compile or be inserted.
 
-	if ((efer & (EFER_LME|EFER_LMA)) != (EFER_LME|EFER_LMA)) {
-		pr_err("Not in IA-32e mode, aborting.\n");
-		return;
-	}
+	if ((err = RDMSR(MSR_EFER, efer)))
+		return err;
 
 	if (!(read_cr0() & X86_CR0_PG)) {
 		pr_err("Paging disabled, aborting.\n");
-		return;
+		return 0;
+	}
+
+	if ((efer & (EFER_LME|EFER_LMA)) != (EFER_LME|EFER_LMA)) {
+		pr_err("Not in IA-32e mode, aborting.\n");
+		return 0;
 	}
 
 	cr4 = __read_cr4();
 	if (!(cr4 & X86_CR4_PAE)) {
 		pr_err("PAE disabled, aborting.\n");
-		return;
+		return 0;
 	}
 
 #ifdef CONFIG_X86_INTEL_MEMORY_PROTECTION_KEYS
@@ -310,20 +310,28 @@ void walk(const struct mm_struct *mm, unsigned long vaddr)
 #endif
 
 	if (cr4 & X86_CR4_LA57)
-		walk_5l(mm, vaddr, pke);
+		walk_5l(pgdp, vaddr, pke);
 	else
-		walk_4l(mm, vaddr, pke, NULL);
+		walk_4l(pgdp, vaddr, pke, NULL);
+
+	return 0;
 }
 
-static int __init page_table_walk_init(void)
-{
+static int walk_kernel(unsigned long vaddr) {
+	pgd_t *pgdp;
+
+	pr_info("Examining kernel vaddr 0x%lx\n", vaddr);
+
+	// In theory we would just use init_mm.pgd here, however init_mm is not
+	// exported for us to use, so read cr3 manually and convert PA to VA.
+	pgdp = phys_to_virt(__read_cr3() & ~0xfff);
+	return walk(pgd_offset_pgd(pgdp, vaddr), vaddr);
+}
+
+static int walk_user(int user_pid, unsigned long vaddr) {
 	struct task_struct *task;
 	struct mm_struct *mm;
-
-	if (dump) {
-		dump_macros();
-		goto out;
-	}
+	int res;
 
 	if (user_pid == -1) {
 		task = current;
@@ -347,7 +355,8 @@ static int __init page_table_walk_init(void)
 			// instead they have an active_mm stolen from some other
 			// task, but only if they are *currently running* (good
 			// luck trying to catch those). Indeed it does not make
-			// much sense to inspect kthread page tables.
+			// much sense to inspect kthread page tables; just
+			// inspect kernel page tables passing pid=0 instead.
 			pr_err("Task has no own mm nor active mm, aborting.\n");
 			return -ESRCH;
 		}
@@ -355,18 +364,35 @@ static int __init page_table_walk_init(void)
 		pr_warn("Task does not have own mm, using active_mm.\n");
 	}
 
-	walk(mm, vaddr);
+	res = walk(pgd_offset(mm, vaddr), vaddr);
 	put_task_struct(task);
+	return res;
+}
 
-out:
+static int __init page_table_walk_init(void)
+{
+	int err;
+
+	if (dump) {
+		dump_macros();
+	} else {
+		if (user_pid)
+			err = walk_user(user_pid, vaddr);
+		else
+			err = walk_kernel(vaddr);
+
+		if (err)
+			return err;
+	}
+
 	// Just fail loading with a random error to make it simpler to use this
 	// module multiple times in a row.
 	return -ECANCELED;
 }
 
 module_init(page_table_walk_init);
-MODULE_VERSION("0.4");
-MODULE_DESCRIPTION("Walk the page table and dump entries and flags given a PID "
-		   "and a virtual address");
+MODULE_VERSION("0.5");
+MODULE_DESCRIPTION("Walk user/kernel page tables given a virtual address (plus"
+		   "PID for user page tables) and dump entries and flags");
 MODULE_AUTHOR("Marco Bonelli");
 MODULE_LICENSE("Dual MIT/GPL");

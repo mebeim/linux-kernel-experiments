@@ -14,7 +14,7 @@ which were written while answering/browsing StackOverflow questions on the
 | [`enum_pids.c`](enum_pids.c)                       | Enumerate all the tasks that have a given PID as pid, tgid, pgid or sid    | 5.10           | [67235938][q67235938], [71204947][q71204947] |
 | [`find_root_dev.c`](find_root_dev.c)               | Find the device where root (/) is mounted and its name                     | 4.19           | [60878209][q60878209]                        |
 | [`kallsyms.c`](kallsyms.c)                         | Lookup kallsyms from kernel space                                          | 4.19           | -                                            |
-| [`page_table_walk.c`](page_table_walk.c)           | Walk the page table and dump entries given a PID and a virtual address     | 5.10           | -                                            |
+| [`page_table_walk.c`](page_table_walk.c)           | Walk user/kernel page tables and dump entries given a virtual address      | 5.10           | -                                            |
 | [`reboot_notifier.c`](reboot_notifier.c)           | Test waiting for a critical job (kthread) to finish before poweroff/reboot | 5.10           | [64670766][q64670766]                        |
 | [`task_bfs_dfs.c`](task_bfs_dfs.c)                 | Iterate over a task's children tree using BFS or DFS                       | 5.10           | [19208487][q19208487], [61201560][q61201560] |
 | [`task_rss.c`](task_rss.c)                         | Calculare task RSS of all running tasks                                    | 5.6, 5.10      | [67224020][q67224020]                        |
