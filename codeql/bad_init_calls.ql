@@ -9,7 +9,7 @@ import utils
 
 from KernelFunc func, KernelFunc caller, FunctionCall call
 where
-	func.isInSection(".init.text")
+	(func.isInSection(".init.text") or func.isInSection(".head.text"))
 	and call = func.getACallToThisFunction()
 	and caller = call.getEnclosingFunction()
 	and not caller.isInline()
