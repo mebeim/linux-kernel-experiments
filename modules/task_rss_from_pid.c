@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (GPL-2.0 OR MIT)
 /**
- * Calculare task RSS given a PID. Tested on kernel 5.6.
+ * Calculare task RSS given a PID. Tested on kernel 5.6, 5.10, 5.17.
  * Usage: sudo insmod task_rss_from_pid.ko pid=123
  *        sudo modprobe tark_rss_from_pid pid=123
  * Sparkled from: https://stackoverflow.com/questions/67224020
@@ -10,6 +10,7 @@
 #include <linux/module.h>      // THIS_MODULE, MODULE_VERSION, ...
 #include <linux/init.h>        // module_{init,exit}
 #include <linux/sched/task.h>  // struct task_struct, {get,put}_task_struct()
+#include <linux/sched/mm.h>    // get_task_mm(), mmput()
 #include <linux/mm.h>          // get_mm_rss()
 #include <linux/pid.h>         // struct pid, get_pid_task(), find_get_pid()
 #include <linux/moduleparam.h> // module_param_named()
@@ -26,7 +27,9 @@ module_param_named(pid, user_pid, int, 0);
 static int __init modinit(void)
 {
 	struct task_struct *tsk;
+	struct mm_struct *mm;
 	unsigned long rss;
+	char comm[TASK_COMM_LEN];
 
 #ifndef CONFIG_MMU
 	pr_err("No MMU, cannot calculate RSS.\n");
@@ -39,27 +42,28 @@ static int __init modinit(void)
 		return -ESRCH;
 	}
 
-	pr_info("Calculating VmRSS for \"%s\" (PID: %d)\n", tsk->comm, tsk->pid);
+	get_task_comm(comm, tsk);
+	mm = get_task_mm(tsk);
 
-	if (tsk->mm) {
-		rss = get_mm_rss(tsk->mm) << PAGE_SHIFT;
+	pr_info("Calculating VmRSS for \"%s\" (PID: %d)\n", comm, tsk->pid);
+
+	if (mm) {
+		rss = get_mm_rss(mm) << PAGE_SHIFT;
+		mmput(mm);
 		pr_info("VmRSS = %lu byes\n", rss);
 	} else {
 		pr_info("Task is an anonymous process.\n");
 	}
 
 	put_task_struct(tsk);
-	return 0;
-}
 
-static void __exit modexit(void)
-{
-	// This function is only needed to be able to unload the module.
+	// Just fail loading with a random error to make it simpler to use this
+	// module multiple times in a row.
+	return -ECANCELED;
 }
 
 module_init(modinit);
-module_exit(modexit);
-MODULE_VERSION("0.1");
+MODULE_VERSION("0.2");
 MODULE_DESCRIPTION("Calculare task RSS given a PID.");
 MODULE_AUTHOR("Marco Bonelli");
 MODULE_LICENSE("Dual MIT/GPL");

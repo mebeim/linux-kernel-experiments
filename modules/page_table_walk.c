@@ -5,7 +5,9 @@
  * entries for each page table level. With dump=1 just dump the values of useful
  * page table macros and exit. This module was written for x86_64. The
  * correspondence between page table types and Intel doc is: pgd=PML5E,
- * p4d=PML4E, pud=PDPTE, pmd=PDE, pte=PTE. Tested on kernel 5.10 x86_64.
+ * p4d=PML4E, pud=PDPTE, pmd=PDE, pte=PTE.
+ *
+ * Tested on kernel 5.10, 5.17.
  *
  * Usage: sudo insmod page_table_walk.ko pid=123 vaddr=0x1234  # user
  *        sudo insmod page_table_walk.ko pid=0 vaddr=0x1234    # kernel
@@ -17,6 +19,7 @@
 #include <linux/init.h>          // module_{init,exit}
 #include <linux/pgtable.h>       // page table types/macros, ZERO_PAGE macro
 #include <linux/sched/task.h>    // struct task_struct, {get,put}_task_struct()
+#include <linux/sched/mm.h>      // mmget(), mmput()
 #include <asm/msr-index.h>       // MSR defines
 #include <asm/msr.h>             // r/w MSR funcs/macros
 #include <asm/special_insns.h>   // r/w control regs
@@ -329,6 +332,7 @@ static int walk_kernel(unsigned long vaddr) {
 }
 
 static int walk_user(int user_pid, unsigned long vaddr) {
+	char comm[TASK_COMM_LEN];
 	struct task_struct *task;
 	struct mm_struct *mm;
 	int res;
@@ -344,7 +348,12 @@ static int walk_user(int user_pid, unsigned long vaddr) {
 		}
 	}
 
-	pr_info("Examining %s[%d] vaddr 0x%lx\n", task->comm, task->pid, vaddr);
+	pr_info("Examining %s[%d] vaddr 0x%lx\n", get_task_comm(comm, task),
+		task->pid, vaddr);
+
+	// Can't use get_task_mm() here if we also want to handle kthreads,
+	// which don't have their own ->mm.
+	task_lock(task);
 
 	if (!(mm = task->mm)) {
 		mm = task->active_mm;
@@ -358,14 +367,19 @@ static int walk_user(int user_pid, unsigned long vaddr) {
 			// much sense to inspect kthread page tables; just
 			// inspect kernel page tables passing pid=0 instead.
 			pr_err("Task has no own mm nor active mm, aborting.\n");
+			task_unlock(task);
 			return -ESRCH;
 		}
 
 		pr_warn("Task does not have own mm, using active_mm.\n");
 	}
 
-	res = walk(pgd_offset(mm, vaddr), vaddr);
+	mmget(mm);
+	task_unlock(task);
 	put_task_struct(task);
+
+	res = walk(pgd_offset(mm, vaddr), vaddr);
+	mmput(mm);
 	return res;
 }
 
@@ -391,7 +405,7 @@ static int __init page_table_walk_init(void)
 }
 
 module_init(page_table_walk_init);
-MODULE_VERSION("0.5");
+MODULE_VERSION("0.6");
 MODULE_DESCRIPTION("Walk user/kernel page tables given a virtual address (plus"
 		   "PID for user page tables) and dump entries and flags");
 MODULE_AUTHOR("Marco Bonelli");

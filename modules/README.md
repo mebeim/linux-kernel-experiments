@@ -4,23 +4,23 @@ These are simple Linux kernel modules written for educational purposes, some of
 which were written while answering/browsing StackOverflow questions on the
 `[linux-kernel]` tag.
 
-| Module                                             | Description                                                                | Kernel version | SO question?                                 |
-|:---------------------------------------------------|:---------------------------------------------------------------------------|:---------------|:---------------------------------------------|
-| [`arm64/syscall_hijack.c`](arm64/syscall_hijack.c) | Test syscall table hijacking on arm64                                      | 4.19           | [61247838][q61247838]                        |
-| [`arm64/undef_instr.c`](arm64/undef_instr.c)       | Test kernel undefined instruction handler on arm64                         | 4.19           | [61238959][q61238959]                        |
-| [`cpufreq.c`](cpufreq.c)                           | Get CPU frequency for currently online CPUs                                | 5.10           | [64111116][q64111116]                        |
-| [`cpuinfo.c`](cpuinfo.c)                           | Get CPU core ID from current CPU ID                                        | 5.10           | [61349444][q61349444]                        |
-| [`datetime.c`](datetime.c)                         | Get current date and time from kernel space taking into account time zone  | 5.10           | -                                            |
-| [`enum_pids.c`](enum_pids.c)                       | Enumerate all the tasks that have a given PID as pid, tgid, pgid or sid    | 5.10           | [67235938][q67235938], [71204947][q71204947] |
-| [`find_root_dev.c`](find_root_dev.c)               | Find the device where root (/) is mounted and its name                     | 4.19           | [60878209][q60878209]                        |
-| [`kallsyms.c`](kallsyms.c)                         | Lookup kallsyms from kernel space                                          | 4.19           | -                                            |
-| [`page_table_walk.c`](page_table_walk.c)           | Walk user/kernel page tables and dump entries given a virtual address      | 5.10           | -                                            |
-| [`reboot_notifier.c`](reboot_notifier.c)           | Test waiting for a critical job (kthread) to finish before poweroff/reboot | 5.10           | [64670766][q64670766]                        |
-| [`task_bfs_dfs.c`](task_bfs_dfs.c)                 | Iterate over a task's children tree using BFS or DFS                       | 5.10           | [19208487][q19208487], [61201560][q61201560] |
-| [`task_rss.c`](task_rss.c)                         | Calculare task RSS of all running tasks                                    | 5.6, 5.10      | [67224020][q67224020]                        |
-| [`task_rss_from_pid.c`](task_rss_from_pid.c)       | Calculare task RSS given an userspace PID                                  | 5.6, 5.10      | [67224020][q67224020]                        |
-| [`test_chardev.c`](test_chardev.c)                 | Test character device kernel APIs                                          | 5.8, 5.10      | -                                            |
-| [`test_hashtable.c`](test_hashtable.c)             | Test kernel hashtable API                                                  | 5.10           | [60870788][q60870788]                        |
+| Module                                             | Description                                                                | Kernel version  | SO question?                                 |
+|:---------------------------------------------------|:---------------------------------------------------------------------------|:----------------|:---------------------------------------------|
+| [`arm64/syscall_hijack.c`](arm64/syscall_hijack.c) | Test syscall table hijacking on arm64                                      | 4.19            | [61247838][q61247838]                        |
+| [`arm64/undef_instr.c`](arm64/undef_instr.c)       | Test kernel undefined instruction handler on arm64                         | 4.19            | [61238959][q61238959]                        |
+| [`cpufreq.c`](cpufreq.c)                           | Get CPU frequency for currently online CPUs                                | 5.10            | [64111116][q64111116]                        |
+| [`cpuinfo.c`](cpuinfo.c)                           | Get CPU core ID from current CPU ID                                        | 5.10            | [61349444][q61349444]                        |
+| [`datetime.c`](datetime.c)                         | Get current date and time from kernel space taking into account time zone  | 5.10            | -                                            |
+| [`enum_pids.c`](enum_pids.c)                       | Enumerate all the tasks that have a given PID as pid, tgid, pgid or sid    | 5.10            | [67235938][q67235938], [71204947][q71204947] |
+| [`find_root_dev.c`](find_root_dev.c)               | Find the device where root (/) is mounted and its name                     | 4.19            | [60878209][q60878209]                        |
+| [`kallsyms.c`](kallsyms.c)                         | Lookup kallsyms from kernel space                                          | 4.19            | -                                            |
+| [`page_table_walk.c`](page_table_walk.c)           | Walk user/kernel page tables and dump entries given a virtual address      | 5.10, 5.17      | -                                            |
+| [`reboot_notifier.c`](reboot_notifier.c)           | Test waiting for a critical job (kthread) to finish before poweroff/reboot | 5.10            | [64670766][q64670766]                        |
+| [`task_bfs_dfs.c`](task_bfs_dfs.c)                 | Iterate over a task's children tree using BFS or DFS                       | 5.10, 5.17      | [19208487][q19208487], [61201560][q61201560] |
+| [`task_rss.c`](task_rss.c)                         | Calculare task RSS of all running tasks                                    | 5.6, 5.10, 5.17 | [67224020][q67224020]                        |
+| [`task_rss_from_pid.c`](task_rss_from_pid.c)       | Calculare task RSS given an userspace PID                                  | 5.6, 5.10, 5.17 | [67224020][q67224020]                        |
+| [`test_chardev.c`](test_chardev.c)                 | Test character device kernel APIs                                          | 5.8, 5.10       | -                                            |
+| [`test_hashtable.c`](test_hashtable.c)             | Test kernel hashtable API                                                  | 5.10            | [60870788][q60870788]                        |
 
 ## Building
 

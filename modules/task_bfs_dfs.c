@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (GPL-2.0 OR MIT)
 /**
  * Iterate and dump a task's children tree using BFS or DFS.
- * Tested on kernel 5.10.
+ * Tested on kernel 5.10, 5.17.
  * Usage: sudo insmod task_bfs.ko pid=123
  *        sudo modprobe task_bfs pid=123
  * Sparkled from: https://stackoverflow.com/questions/61201560 (sadly deleted by
@@ -15,6 +15,7 @@
 #include <linux/sched/task.h>  // struct task_struct, {get,put}_task_struct()
 #include <linux/slab.h>        // kmalloc(), kfree()
 #include <linux/pid.h>         // struct pid, get_pid_task(), find_get_pid()
+#include <linux/version.h>     // LINUX_VERSION_CODE, KERNEL_VERSION
 #include <linux/moduleparam.h> // module_param_named()
 
 #ifdef pr_fmt
@@ -23,7 +24,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 static int user_pid;
-module_param_named(pid, user_pid, int, 1);
+module_param_named(pid, user_pid, int, 0);
 
 struct queue {
 	struct task_struct *task;
@@ -39,6 +40,19 @@ static struct task_struct *get_user_pid_task(pid_t pid) {
 	return get_pid_task(find_get_pid(pid), PIDTYPE_PID);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,0)
+#define TASK_STATE_FMT "%u"
+static inline unsigned task_state(const struct task_struct *task) {
+	return READ_ONCE(task->__state);
+}
+#else
+#define TASK_STATE_FMT "%ld"
+static inline long task_state(const struct task_struct *task) {
+	return task->state;
+}
+#endif
+
+
 // Undefine to use DFS instead
 #define BFS
 #ifdef BFS
@@ -47,7 +61,9 @@ static struct task_struct *get_user_pid_task(pid_t pid) {
 #define TECHNIQUE "DFS"
 #endif
 
-static void dump_children_tree(struct task_struct *task) {
+static void dump_children_tree(struct task_struct *task)
+{
+	char comm[TASK_COMM_LEN];
 	struct task_struct *child;
 	struct list_head *list;
 	struct queue *q, *tmp;
@@ -78,8 +94,9 @@ static void dump_children_tree(struct task_struct *task) {
 		ppid = rcu_dereference(task->real_parent)->pid;
 		rcu_read_unlock();
 
-		pr_info("Name: %-20s State: %ld\tPID: %d\tPPID: %d\n",
-			task->comm, task->state, task->pid, ppid);
+		pr_info("Name: %-20s State: "TASK_STATE_FMT"\tPID: %d\tPPID: %d\n",
+			get_task_comm(comm, task), task_state(task), task->pid,
+			ppid);
 
 		list_for_each(list, &task->children) {
 			child = list_entry(list, struct task_struct, sibling);
@@ -120,6 +137,7 @@ out_nomem:
 
 static int __init modinit(void)
 {
+	char comm[TASK_COMM_LEN];
 	struct task_struct *tsk;
 
 	tsk = get_user_pid_task(user_pid);
@@ -128,8 +146,8 @@ static int __init modinit(void)
 		return -ESRCH;
 	}
 
-	pr_info("Running %s on task \"%s\" (PID: %d)\n", TECHNIQUE, tsk->comm,
-		tsk->pid);
+	pr_info("Running %s on task \"%s\" (PID: %d)\n", TECHNIQUE,
+		get_task_comm(comm, tsk), tsk->pid);
 
 	dump_children_tree(tsk);
 
@@ -139,7 +157,7 @@ static int __init modinit(void)
 }
 
 module_init(modinit);
-MODULE_VERSION("0.2");
+MODULE_VERSION("0.3");
 MODULE_DESCRIPTION("Iterate over a task's children using BFS.");
 MODULE_AUTHOR("Marco Bonelli");
 MODULE_LICENSE("Dual MIT/GPL");
