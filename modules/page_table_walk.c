@@ -15,14 +15,15 @@
  *
  * Changelog:
  *
- * v0.6: Appropriately use mmget()/mmput() task_lock()/task_unlock() to get
- *       ahold of task->mm or task->active_mm.
- * v0.5: Support walking kernel page tables.
- * v0.4: Support PAT bit for huge pages, support kthreads, use ulong for vaddr,
- *       fix checks for present page table entries.
- * v0.3: Detect zero page, support huge pages.
- * v0.2: Generalize/refactor code.
- * v0.1: Initial version.
+ * v0.6.1: Also put_task_struct() in case of failure to get task mm/active_mm.
+ * v0.6  : Appropriately use mmget()/mmput() task_lock()/task_unlock() to get
+ *         ahold of task->mm or task->active_mm.
+ * v0.5  : Support walking kernel page tables.
+ * v0.4  : Support PAT bit for huge pages, support kthreads, use ulong for
+ *         vaddr, fix checks for present page table entries.
+ * v0.3  : Detect zero page, support huge pages.
+ * v0.2  : Generalize/refactor code.
+ * v0.1  : Initial version.
  */
 
 #include <linux/kernel.h>        // pr_info(), pr_*()
@@ -379,6 +380,7 @@ static int walk_user(int user_pid, unsigned long vaddr) {
 			// inspect kernel page tables passing pid=0 instead.
 			pr_err("Task has no own mm nor active mm, aborting.\n");
 			task_unlock(task);
+			put_task_struct(task);
 			return -ESRCH;
 		}
 
