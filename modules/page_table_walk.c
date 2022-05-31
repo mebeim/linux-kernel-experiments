@@ -12,6 +12,17 @@
  * Usage: sudo insmod page_table_walk.ko pid=123 vaddr=0x1234  # user
  *        sudo insmod page_table_walk.ko pid=0 vaddr=0x1234    # kernel
  *        sudo insmod page_table_walk.ko dump=1
+ *
+ * Changelog:
+ *
+ * v0.6: Appropriately use mmget()/mmput() task_lock()/task_unlock() to get
+ *       ahold of task->mm or task->active_mm.
+ * v0.5: Support walking kernel page tables.
+ * v0.4: Support PAT bit for huge pages, support kthreads, use ulong for vaddr,
+ *       fix checks for present page table entries.
+ * v0.3: Detect zero page, support huge pages.
+ * v0.2: Generalize/refactor code.
+ * v0.1: Initial version.
  */
 
 #include <linux/kernel.h>        // pr_info(), pr_*()
