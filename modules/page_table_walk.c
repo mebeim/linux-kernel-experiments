@@ -15,15 +15,16 @@
  *
  * Changelog:
  *
- * v0.6.1: Also put_task_struct() in case of failure to get task mm/active_mm.
- * v0.6  : Appropriately use mmget()/mmput() task_lock()/task_unlock() to get
- *         ahold of task->mm or task->active_mm.
- * v0.5  : Support walking kernel page tables.
- * v0.4  : Support PAT bit for huge pages, support kthreads, use ulong for
- *         vaddr, fix checks for present page table entries.
- * v0.3  : Detect zero page, support huge pages.
- * v0.2  : Generalize/refactor code.
- * v0.1  : Initial version.
+ * v0.7: Print correct paddr for huge pages, detect PROTNONE pages
+ * v0.6: Appropriately use mmget()/mmput() task_lock()/task_unlock() to get
+ *       ahold of task->mm or task->active_mm, put_task_struct() in case of
+ *       failure to get task mm/active_mm.
+ * v0.5: Support walking kernel page tables.
+ * v0.4: Support PAT bit for huge pages, support kthreads, use ulong for vaddr,
+ *       fix checks for present page table entries.
+ * v0.3: Detect zero page, support huge pages.
+ * v0.2: Generalize/refactor code.
+ * v0.1: Initial version.
  */
 
 #include <linux/kernel.h>        // pr_info(), pr_*()
@@ -42,8 +43,6 @@
 #undef pr_fmt
 #endif
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
-#define IS_ZERO_PAGE(pa) ((pa) == (page_to_pfn(ZERO_PAGE(0)) << PAGE_SHIFT))
 
 static int user_pid = -1;
 module_param_named(pid, user_pid, int, 0);
@@ -80,23 +79,31 @@ static inline int rdmsrl_wrap(const char *name, int msrno,
 
 static void dump_macros(void)
 {
-	pr_info("PGDIR_SHIFT  = %d\n", PGDIR_SHIFT);
-	pr_info("P4D_SHIFT    = %d\n", P4D_SHIFT);
-	pr_info("PUD_SHIFT    = %d\n", PUD_SHIFT);
-	pr_info("PMD_SHIFT    = %d\n", PMD_SHIFT);
-	pr_info("PAGE_SHIFT   = %d\n", PAGE_SHIFT);
-	pr_info("PTRS_PER_PGD = %d\n", PTRS_PER_PGD);
-	pr_info("PTRS_PER_P4D = %d\n", PTRS_PER_P4D);
-	pr_info("PTRS_PER_PUD = %d\n", PTRS_PER_PUD);
-	pr_info("PTRS_PER_PMD = %d\n", PTRS_PER_PMD);
-	pr_info("PTRS_PER_PTE = %d\n", PTRS_PER_PTE);
-	pr_info("PGDIR_MASK   = 0x%016lx\n", PGDIR_MASK);
-	pr_info("P4D_MASK     = 0x%016lx\n", P4D_MASK);
-	pr_info("PUD_MASK     = 0x%016lx\n", PUD_MASK);
-	pr_info("PMD_MASK     = 0x%016lx\n", PMD_MASK);
-	pr_info("PAGE_MASK    = 0x%016lx\n", PAGE_MASK);
-	pr_info("PTE_PFN_MASK = 0x%016lx\n", PTE_PFN_MASK);
-	pr_info("PAGE_OFFSET  = 0x%016lx\n", PAGE_OFFSET);
+	pr_info("PGDIR_SHIFT   = %d\n", PGDIR_SHIFT);
+	pr_info("P4D_SHIFT     = %d\n", P4D_SHIFT);
+	pr_info("PUD_SHIFT     = %d\n", PUD_SHIFT);
+	pr_info("PMD_SHIFT     = %d\n", PMD_SHIFT);
+	pr_info("PAGE_SHIFT    = %d\n", PAGE_SHIFT);
+	pr_info("PTRS_PER_PGD  = %d\n", PTRS_PER_PGD);
+	pr_info("PTRS_PER_P4D  = %d\n", PTRS_PER_P4D);
+	pr_info("PTRS_PER_PUD  = %d\n", PTRS_PER_PUD);
+	pr_info("PTRS_PER_PMD  = %d\n", PTRS_PER_PMD);
+	pr_info("PTRS_PER_PTE  = %d\n", PTRS_PER_PTE);
+	pr_info("PGDIR_MASK    = 0x%016lx\n", PGDIR_MASK);
+	pr_info("P4D_MASK      = 0x%016lx\n", P4D_MASK);
+	pr_info("PUD_MASK      = 0x%016lx\n", PUD_MASK);
+	pr_info("PMD_MASK      = 0x%016lx\n", PMD_MASK);
+	pr_info("PAGE_MASK     = 0x%016lx\n", PAGE_MASK);
+	pr_info("PUD_PAGE_MASK = 0x%016lx\n", PUD_PAGE_MASK);
+	pr_info("PMD_PAGE_MASK = 0x%016lx\n", PMD_PAGE_MASK);
+	pr_info("PTE_PFN_MASK  = 0x%016lx\n", PTE_PFN_MASK);
+	pr_info("PAGE_OFFSET   = 0x%016lx\n", PAGE_OFFSET);
+}
+
+// Borrowed from arch/x86/mm/hugetlbpage.c
+static int pud_huge(pud_t pud)
+{
+	return !!(pud_val(pud) & _PAGE_PSE);
 }
 
 // Borrowed from arch/x86/mm/hugetlbpage.c
@@ -106,12 +113,26 @@ static int pmd_huge(pmd_t pmd)
 		(pmd_val(pmd) & (_PAGE_PRESENT|_PAGE_PSE)) != _PAGE_PRESENT;
 }
 
-static int pud_huge(pud_t pud)
+static inline unsigned long pud_paddr(pud_t pud, unsigned long vaddr)
 {
-	return !!(pud_val(pud) & _PAGE_PSE);
+	return (pud_pfn(pud) << PAGE_SHIFT) | (vaddr & ~PUD_PAGE_MASK);
 }
 
-static void dump_page_flags_common(unsigned long val)
+static inline unsigned long pmd_paddr(pmd_t pmd, unsigned long vaddr)
+{
+	return (pmd_pfn(pmd) << PAGE_SHIFT) | (vaddr & ~PMD_PAGE_MASK);
+}
+
+static inline unsigned long pte_paddr(pte_t pte, unsigned long vaddr)
+{
+	return (pte_pfn(pte) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK);
+}
+
+static inline bool is_zero_page_pte(pte_t pte) {
+	return pte_pfn(pte) == page_to_pfn(ZERO_PAGE(0));
+}
+
+static void dump_flags_common(unsigned long val)
 {
 	if (val & _PAGE_PRESENT ) pr_cont(" PRESENT");
 	if (val & _PAGE_RW      ) pr_cont(" RW");
@@ -122,26 +143,30 @@ static void dump_page_flags_common(unsigned long val)
 	if (val & _PAGE_ACCESSED) pr_cont(" ACCESSED");
 }
 
-static void dump_page_flags_last_level(unsigned long val, bool pke)
+static void dump_flags_last_level(unsigned long val, bool protnone, bool pke)
 {
-	if (val & _PAGE_DIRTY     ) pr_cont(" DIRTY");
-	if (val & _PAGE_GLOBAL    ) pr_cont(" GLOBAL");
+	// Pages with no permissions have the PRESENT bit clear and the PROTNONE
+	// bit set. PROTNONE and GLOBAL are the same bit.
+	static_assert(_PAGE_GLOBAL == _PAGE_PROTNONE);
+
+	if (val & _PAGE_DIRTY      ) pr_cont(" DIRTY");
+	if (protnone)                pr_cont(" PROTNONE");
+	else if (val & _PAGE_GLOBAL) pr_cont(" GLOBAL");
 #ifdef CONFIG_HAVE_ARCH_USERFAULTFD_WP
-	if (val & _PAGE_UFFD_WP   ) pr_cont(" UFFD_WP");
+	if (val & _PAGE_UFFD_WP    ) pr_cont(" UFFD_WP");
 #endif
 #ifdef CONFIG_MEM_SOFT_DIRTY
-	if (val & _PAGE_SOFT_DIRTY) pr_cont(" SOFT_DIRTY");
+	if (val & _PAGE_SOFT_DIRTY ) pr_cont(" SOFT_DIRTY");
 #endif
-	if (val & _PAGE_NX        ) pr_cont(" NX");
+	if (val & _PAGE_NX         ) pr_cont(" NX");
 
 	if (pke)
 		pr_cont(" PKEY=%lx",
 			(val & _PAGE_PKEY_MASK) >> _PAGE_BIT_PKEY_BIT0);
 }
 
-static void dump_paddr(unsigned long paddr) {
-	pr_info("paddr: 0x%lx%s\n", paddr,
-		IS_ZERO_PAGE(paddr & PAGE_MASK) ? " (zero page)" : "");
+static void dump_paddr(unsigned long paddr, bool is_zero) {
+	pr_info("paddr: 0x%lx%s\n", paddr, is_zero ? " (zero page)" : "");
 }
 
 static bool dump_pgd(pgd_t pgd, unsigned long vaddr)
@@ -154,7 +179,7 @@ static bool dump_pgd(pgd_t pgd, unsigned long vaddr)
 	}
 
 	pr_info("pgd: idx %03lx val %016lx", pgd_index(vaddr), val);
-	dump_page_flags_common((unsigned long)val);
+	dump_flags_common((unsigned long)val);
 	pr_cont("\n");
 
 	return false;
@@ -170,7 +195,7 @@ static bool dump_p4d(p4d_t p4d, unsigned long vaddr)
 	}
 
 	pr_info("p4d: idx %03lx val %016lx", p4d_index(vaddr), val);
-	dump_page_flags_common((unsigned long)val);
+	dump_flags_common((unsigned long)val);
 	pr_cont("\n");
 
 	return false;
@@ -186,16 +211,16 @@ static bool dump_pud(pud_t pud, unsigned long vaddr, bool pke)
 	}
 
 	pr_info("pud: idx %03lx val %016lx", pud_index(vaddr), val);
-	dump_page_flags_common((unsigned long)val);
+	dump_flags_common((unsigned long)val);
 
 	if (pud_huge(pud)) {
 		pr_cont(" 1G");
 		if (val & _PAGE_PAT_LARGE)
 			pr_cont(" PAT");
 
-		dump_page_flags_last_level((unsigned long)val, pke);
+		dump_flags_last_level((unsigned long)val, false, pke);
 		pr_cont("\n");
-		dump_paddr((pud_pfn(pud) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
+		dump_paddr(pud_paddr(pud, vaddr), false);
 		return true;
 	}
 
@@ -213,16 +238,20 @@ static bool dump_pmd(pmd_t pmd, unsigned long vaddr, bool pke)
 	}
 
 	pr_info("pmd: idx %03lx val %016lx", pmd_index(vaddr), val);
-	dump_page_flags_common((unsigned long)val);
+	dump_flags_common((unsigned long)val);
 
 	if (pmd_huge(pmd)) {
 		pr_cont(" 2M");
 		if (val & _PAGE_PAT_LARGE)
 			pr_cont(" PAT");
 
-		dump_page_flags_last_level((unsigned long)val, pke);
+		dump_flags_last_level((unsigned long)val, pmd_protnone(pmd), pke);
 		pr_cont("\n");
-		dump_paddr((pmd_pfn(pmd) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
+
+		// Unfortunately huge_zero_page (mm/huge_memory.c) is not
+		// exported, so there's no decent way to detect huge zero pages,
+		// though /proc/kpageflags has this info.
+		dump_paddr(pmd_paddr(pmd, vaddr), false);
 		return true;
 	}
 
@@ -240,14 +269,14 @@ static void dump_pte(pte_t pte, unsigned long vaddr, bool pke)
 	}
 
 	pr_info("pte: idx %03lx val %016lx", pte_index(vaddr), val);
-	dump_page_flags_common((unsigned long)val);
+	dump_flags_common((unsigned long)val);
 
 	if (val & _PAGE_PAT)
 		pr_cont(" PAT");
 
-	dump_page_flags_last_level((unsigned long)val, pke);
+	dump_flags_last_level((unsigned long)val, pte_protnone(pte), pke);
 	pr_cont("\n");
-	dump_paddr((pte_pfn(pte) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK));
+	dump_paddr(pte_paddr(pte, vaddr), is_zero_page_pte(pte));
 }
 
 static void walk_4l(pgd_t *pgdp, unsigned long vaddr, bool pke, p4d_t *p4dp)
@@ -418,7 +447,7 @@ static int __init page_table_walk_init(void)
 }
 
 module_init(page_table_walk_init);
-MODULE_VERSION("0.6");
+MODULE_VERSION("0.7");
 MODULE_DESCRIPTION("Walk user/kernel page tables given a virtual address (plus"
 		   "PID for user page tables) and dump entries and flags");
 MODULE_AUTHOR("Marco Bonelli");
