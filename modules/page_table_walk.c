@@ -15,10 +15,12 @@
  *
  * Changelog:
  *
- * v0.7: Print correct paddr for huge pages, detect PROTNONE pages
- * v0.6: Appropriately use mmget()/mmput() task_lock()/task_unlock() to get
- *       ahold of task->mm or task->active_mm, put_task_struct() in case of
- *       failure to get task mm/active_mm.
+ * v0.8: Detect swapped pages and dump swap entries, use {pud,pmd}_large()
+ *       instead of _huge() to detect huge pages.
+ * v0.7: Print correct paddr for huge pages, detect PROTNONE pages.
+ * v0.6: Appropriately use mm{get,put}() and task_[un]lock() to get ahold of
+ *       task->mm or task->active_mm, put_task_struct() in case of failure to
+ *       get task mm/active_mm.
  * v0.5: Support walking kernel page tables.
  * v0.4: Support PAT bit for huge pages, support kthreads, use ulong for vaddr,
  *       fix checks for present page table entries.
@@ -33,6 +35,8 @@
 #include <linux/pgtable.h>       // page table types/macros, ZERO_PAGE macro
 #include <linux/sched/task.h>    // struct task_struct, {get,put}_task_struct()
 #include <linux/sched/mm.h>      // mmget(), mmput()
+#include <linux/swap.h>          // needed by linux/swapops.h
+#include <linux/swapops.h>       // swp_{type,offset}(), p{md,te}_to_swp_entry()
 #include <asm/msr-index.h>       // MSR defines
 #include <asm/msr.h>             // r/w MSR funcs/macros
 #include <asm/special_insns.h>   // r/w control regs
@@ -100,19 +104,6 @@ static void dump_macros(void)
 	pr_info("PAGE_OFFSET   = 0x%016lx\n", PAGE_OFFSET);
 }
 
-// Borrowed from arch/x86/mm/hugetlbpage.c
-static int pud_huge(pud_t pud)
-{
-	return !!(pud_val(pud) & _PAGE_PSE);
-}
-
-// Borrowed from arch/x86/mm/hugetlbpage.c
-static int pmd_huge(pmd_t pmd)
-{
-	return !pmd_none(pmd) &&
-		(pmd_val(pmd) & (_PAGE_PRESENT|_PAGE_PSE)) != _PAGE_PRESENT;
-}
-
 static inline unsigned long pud_paddr(pud_t pud, unsigned long vaddr)
 {
 	return (pud_pfn(pud) << PAGE_SHIFT) | (vaddr & ~PUD_PAGE_MASK);
@@ -128,7 +119,8 @@ static inline unsigned long pte_paddr(pte_t pte, unsigned long vaddr)
 	return (pte_pfn(pte) << PAGE_SHIFT) | (vaddr & ~PAGE_MASK);
 }
 
-static inline bool is_zero_page_pte(pte_t pte) {
+static inline bool is_zero_page_pte(pte_t pte)
+{
 	return pte_pfn(pte) == page_to_pfn(ZERO_PAGE(0));
 }
 
@@ -143,10 +135,13 @@ static void dump_flags_common(unsigned long val)
 	if (val & _PAGE_ACCESSED) pr_cont(" ACCESSED");
 }
 
+// TODO: move PROTNONE check here since it should be the same at all levels?
 static void dump_flags_last_level(unsigned long val, bool protnone, bool pke)
 {
-	// Pages with no permissions have the PRESENT bit clear and the PROTNONE
-	// bit set. PROTNONE and GLOBAL are the same bit.
+	/*
+	 * Pages with no permissions have the PRESENT bit clear and the PROTNONE
+	 * bit set. PROTNONE and GLOBAL are the same bit.
+	 */
 	static_assert(_PAGE_GLOBAL == _PAGE_PROTNONE);
 
 	if (val & _PAGE_DIRTY      ) pr_cont(" DIRTY");
@@ -165,7 +160,26 @@ static void dump_flags_last_level(unsigned long val, bool protnone, bool pke)
 			(val & _PAGE_PKEY_MASK) >> _PAGE_BIT_PKEY_BIT0);
 }
 
-static void dump_paddr(unsigned long paddr, bool is_zero) {
+// See comments in arch/x86/include/asm/pgtable_64.h
+static void dump_swap_flags(unsigned long val)
+{
+	if (val & _PAGE_PROTNONE      ) pr_cont(" PROTNONE");
+#ifdef CONFIG_HAVE_ARCH_USERFAULTFD_WP
+	if (val & _PAGE_SWP_UFFD_WP   ) pr_cont(" UFFD_WP");
+#endif
+#ifdef CONFIG_MEM_SOFT_DIRTY
+	if (val & _PAGE_SWP_SOFT_DIRTY) pr_cont(" SOFT_DIRTY");
+#endif
+}
+
+static void dump_swap_entry(swp_entry_t entry)
+{
+	static_assert(sizeof(pgoff_t) == sizeof(unsigned long));
+	pr_info("Swap: type %x offset %lx", swp_type(entry), swp_offset(entry));
+}
+
+static void dump_paddr(unsigned long paddr, bool is_zero)
+{
 	pr_info("paddr: 0x%lx%s\n", paddr, is_zero ? " (zero page)" : "");
 }
 
@@ -173,12 +187,13 @@ static bool dump_pgd(pgd_t pgd, unsigned long vaddr)
 {
 	pgdval_t val = pgd_val(pgd);
 
+	pr_info("pgd: idx %03lx val %016lx", pgd_index(vaddr), val);
+
 	if (!pgd_present(pgd)) {
 		pr_info("pgd not present\n");
 		return true;
 	}
 
-	pr_info("pgd: idx %03lx val %016lx", pgd_index(vaddr), val);
 	dump_flags_common((unsigned long)val);
 	pr_cont("\n");
 
@@ -189,12 +204,13 @@ static bool dump_p4d(p4d_t p4d, unsigned long vaddr)
 {
 	p4dval_t val = p4d_val(p4d);
 
+	pr_info("p4d: idx %03lx val %016lx", p4d_index(vaddr), val);
+
 	if (!p4d_present(p4d)) {
 		pr_info("p4d not present\n");
 		return true;
 	}
 
-	pr_info("p4d: idx %03lx val %016lx", p4d_index(vaddr), val);
 	dump_flags_common((unsigned long)val);
 	pr_cont("\n");
 
@@ -205,19 +221,39 @@ static bool dump_pud(pud_t pud, unsigned long vaddr, bool pke)
 {
 	pudval_t val = pud_val(pud);
 
+	pr_info("pud: idx %03lx val %016lx", pud_index(vaddr), val);
+
+	/*
+	 * FIXME: what's the deal with pud_present()? It returns false for
+	 * anonymous 1G MAP_HUGETLB pages which were modified and then
+	 * mprotect'd to 0. It seems to only check _PAGE_PRESENT and not
+	 * _PAGE_PROTNONE like {pmd,pte}_present() do.
+	 *
+	 * /proc/[pid]/pagemap seems to use pte_present() on the pud (see
+	 * fs/proc/task_mmu.c:1536 at v5.17)
+	 */
 	if (!pud_present(pud)) {
-		pr_info("pud not present\n");
+		pr_cont(" not present\n");
 		return true;
 	}
 
-	pr_info("pud: idx %03lx val %016lx", pud_index(vaddr), val);
 	dump_flags_common((unsigned long)val);
 
-	if (pud_huge(pud)) {
+	/*
+	 * FIXME: is this correct? Why doesn't pud_large() work when "fixing"
+	 * the pud_present() check above to check _PAGE_PRESENT|_PAGE_PROTNONE???
+	 * When PROTNONE and not PRESENT, pud_large() returns false... weird.
+	 */
+	if (pud_large(pud)) {
 		pr_cont(" 1G");
 		if (val & _PAGE_PAT_LARGE)
 			pr_cont(" PAT");
 
+		/*
+		 * FIXME: there is no pud_protnone() function, but is it true that a pud
+		 * cannot be PROTNONE? Clearly not, as tested and as the above comment
+		 * on the !pud_present(pud) check explains.
+		 */
 		dump_flags_last_level((unsigned long)val, false, pke);
 		pr_cont("\n");
 		dump_paddr(pud_paddr(pud, vaddr), false);
@@ -232,15 +268,35 @@ static bool dump_pmd(pmd_t pmd, unsigned long vaddr, bool pke)
 {
 	pmdval_t val = pmd_val(pmd);
 
-	if (!pmd_present(pmd)) {
-		pr_info("pmd not present\n");
+	pr_info("pmd: idx %03lx val %016lx", pmd_index(vaddr), val);
+
+	if (pmd_none(pmd)) {
+		pr_cont(" none\n");
 		return true;
 	}
 
-	pr_info("pmd: idx %03lx val %016lx", pmd_index(vaddr), val);
+	// is_swap_pmd(pmd) <==> !pmd_none(pmd) && !pmd_present(pmd)
+	if (!pmd_present(pmd)) {
+#if defined(CONFIG_TRANSPARENT_HUGEPAGE) && defined(CONFIG_ARCH_ENABLE_THP_MIGRATION)
+		// Only *transparent* huge pages can be swapped out.
+		dump_swap_flags((unsigned long)val);
+		pr_cont("\n");
+		dump_swap_entry(pmd_to_swp_entry(pmd));
+#else
+		pr_cont(" not present\n");
+#endif
+		return true;
+	}
+
 	dump_flags_common((unsigned long)val);
 
-	if (pmd_huge(pmd)) {
+	/*
+	 * pmd_huge() "returns 1 if @pmd is hugetlb related entry, that is
+	 * normal hugetlb entry or non-present (migration or hwpoisoned) hugetlb
+	 * entry" (where I suppose "hugetlb entry" means MAP_HUGETLB)... so we
+	 * want pmd_large() here.
+	 */
+	if (pmd_large(pmd)) {
 		pr_cont(" 2M");
 		if (val & _PAGE_PAT_LARGE)
 			pr_cont(" PAT");
@@ -248,9 +304,14 @@ static bool dump_pmd(pmd_t pmd, unsigned long vaddr, bool pke)
 		dump_flags_last_level((unsigned long)val, pmd_protnone(pmd), pke);
 		pr_cont("\n");
 
-		// Unfortunately huge_zero_page (mm/huge_memory.c) is not
-		// exported, so there's no decent way to detect huge zero pages,
-		// though /proc/kpageflags has this info.
+		/*
+		 * Unfortunately huge_zero_page (mm/huge_memory.c) is not
+		 * exported, so there's no decent way to detect huge zero pages,
+		 * though /proc/kpageflags has this info.
+		 *
+		 * Note for future: if detection becomes possible, make sure to
+		 * appropriately wrap it in #ifdef CONFIG_TRANSPARENT_HUGEPAGE.
+		 */
 		dump_paddr(pmd_paddr(pmd, vaddr), false);
 		return true;
 	}
@@ -261,14 +322,26 @@ static bool dump_pmd(pmd_t pmd, unsigned long vaddr, bool pke)
 
 static void dump_pte(pte_t pte, unsigned long vaddr, bool pke)
 {
-	pteval_t val = pte_val(pte);
+	pteval_t val;
+	static_assert(sizeof(pteval_t) == sizeof(unsigned long));
 
-	if (!pte_present(pte)) {
-		pr_info("pte not present\n");
+	// TODO: when/why should I use pxx_flags(pxx)?
+	val = pte_val(pte);
+	pr_info("pte: idx %03lx val %016lx", pte_index(vaddr), val);
+
+	if (pte_none(pte)) {
+		pr_cont(" none\n");
 		return;
 	}
 
-	pr_info("pte: idx %03lx val %016lx", pte_index(vaddr), val);
+	// is_swap_pte(pte) <==> !pte_none(pte) && !pte_present(pte)
+	if (!pte_present(pte)) {
+		dump_swap_flags((unsigned long)val);
+		pr_cont("\n");
+		dump_swap_entry(pte_to_swp_entry(pte));
+		return;
+	}
+
 	dump_flags_common((unsigned long)val);
 
 	if (val & _PAGE_PAT)
@@ -327,8 +400,10 @@ static int walk(pgd_t *pgdp, unsigned long vaddr)
 	bool pke = false;
 	int err;
 
-	// Not sure how much sense it makes to do all these checks. Some are
-	// redundant as this module wouldn't even compile or be inserted.
+	/*
+	 * Not sure how much sense it makes to do all these checks. Some are
+	 * redundant as this module wouldn't even compile or be inserted.
+	 */
 
 	if ((err = RDMSR(MSR_EFER, efer)))
 		return err;
@@ -366,8 +441,10 @@ static int walk_kernel(unsigned long vaddr) {
 
 	pr_info("Examining kernel vaddr 0x%lx\n", vaddr);
 
-	// In theory we would just use init_mm.pgd here, however init_mm is not
-	// exported for us to use, so read cr3 manually and convert PA to VA.
+	/*
+	 * In theory we would just use init_mm.pgd here, however init_mm is not
+	 * exported for us to use, so read cr3 manually and convert PA to VA.
+	 */
 	pgdp = phys_to_virt(__read_cr3() & ~0xfff);
 	return walk(pgd_offset_pgd(pgdp, vaddr), vaddr);
 }
@@ -392,21 +469,23 @@ static int walk_user(int user_pid, unsigned long vaddr) {
 	pr_info("Examining %s[%d] vaddr 0x%lx\n", get_task_comm(comm, task),
 		task->pid, vaddr);
 
-	// Can't use get_task_mm() here if we also want to handle kthreads,
-	// which don't have their own ->mm.
+	/*
+	 * Can't use get_task_mm() here if we also want to handle kthreads,
+	 * which don't have their own ->mm.
+	 */
 	task_lock(task);
 
 	if (!(mm = task->mm)) {
-		mm = task->active_mm;
-
-		if (!mm) {
-			// This will happen if we try to inspect page tables of
-			// kthreads since those do not have their own mm;
-			// instead they have an active_mm stolen from some other
-			// task, but only if they are *currently running* (good
-			// luck trying to catch those). Indeed it does not make
-			// much sense to inspect kthread page tables; just
-			// inspect kernel page tables passing pid=0 instead.
+		if (!(mm = task->active_mm)) {
+			/*
+			 * This will happen if we try to inspect page tables of
+			 * kthreads since those do not have their own mm;
+			 * instead they have an active_mm stolen from some other
+			 * task, but only if they are *currently running* (good
+			 * luck trying to catch those). Indeed it does not make
+			 * much sense to inspect kthread page tables; just
+			 * inspect kernel page tables passing pid=0 instead.
+			 */
 			pr_err("Task has no own mm nor active mm, aborting.\n");
 			task_unlock(task);
 			put_task_struct(task);
@@ -441,13 +520,15 @@ static int __init page_table_walk_init(void)
 			return err;
 	}
 
-	// Just fail loading with a random error to make it simpler to use this
-	// module multiple times in a row.
+	/*
+	 * Just fail loading with a random error to make it simpler to use this
+	 * module multiple times in a row.
+	 */
 	return -ECANCELED;
 }
 
 module_init(page_table_walk_init);
-MODULE_VERSION("0.7");
+MODULE_VERSION("0.8");
 MODULE_DESCRIPTION("Walk user/kernel page tables given a virtual address (plus"
 		   "PID for user page tables) and dump entries and flags");
 MODULE_AUTHOR("Marco Bonelli");
