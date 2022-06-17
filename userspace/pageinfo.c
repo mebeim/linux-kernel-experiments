@@ -11,14 +11,15 @@
  *
  * Changelog:
  *
- * v0.3: Support self-inspection passing -1 as pid. Support KPF_PGTABLE, plus
- *       undocumented KPF flags available for "kernel hacking assistance".
- *       Report number of times a page is mapped, obtained through
- *       /proc/kpagecount. Fix wrong calculation of file offset when reading
- *       pagemap.
- * v0.2: Support more flags from /proc/[pid]/pagemap and also dump flags from
- *       /proc/kpageflags. Support physical addresses (no PID specified).
- * v0.1: Initial version, only reading /proc/[pid]/pagemap.
+ * v0.3.1: Use "self" instead of -1 for self-inspection.
+ * v0.3:   Support self-inspection passing -1 as pid. Support KPF_PGTABLE, plus
+ *         undocumented KPF flags available for "kernel hacking assistance".
+ *         Report number of times a page is mapped, obtained through
+ *         /proc/kpagecount. Fix wrong calculation of file offset when reading
+ *         pagemap.
+ * v0.2:   Support more flags from /proc/[pid]/pagemap and also dump flags from
+ *         /proc/kpageflags. Support physical addresses (no PID specified).
+ * v0.1:   Initial version, only reading /proc/[pid]/pagemap.
  *
  */
 
@@ -125,13 +126,9 @@ unsigned long read_ulong_at_offset(const char *path, off_t offset) {
 	return res;
 }
 
-unsigned long read_pagemap(int pid, unsigned long vaddr) {
+unsigned long read_pagemap(const char *pid, unsigned long vaddr) {
 	char path[128];
-
-	if (pid == -1)
-		return read_ulong_at_offset("/proc/self/pagemap", (vaddr >> PAGE_SHIFT) * 8);
-
-	sprintf(path, "/proc/%d/pagemap", pid);
+	sprintf(path, "/proc/%s/pagemap", pid);
 	return read_ulong_at_offset(path, (vaddr >> PAGE_SHIFT) * 8);
 }
 
@@ -222,7 +219,7 @@ void dump_kpageflags_kpagecount(unsigned long pfn, bool hack, bool spacing) {
 	printf("\n/proc/kpagecount%s: %ld\n", spacing ? "   " : "", count);
 }
 
-void dump_page_info(int pid, unsigned long addr, bool hack) {
+void dump_page_info(const char *pid, unsigned long addr, bool hack) {
 	unsigned long pm;
 
 	printf("%caddr: 0x%lx, page: 0x%lx\n", pid ? 'V' : 'P', addr, addr & PAGE_MASK);
@@ -242,15 +239,15 @@ void dump_page_info(int pid, unsigned long addr, bool hack) {
 
 void usage_exit(const char *name) {
 	fprintf(stderr, "Usage: %s PID VADDR [hack]\n", name);
-	fprintf(stderr, "       %s -1 VADDR [hack]\n", name);
+	fprintf(stderr, "       %s self VADDR [hack]\n", name);
 	fprintf(stderr, "       %s PADDR [hack]\n", name);
 	exit(1);
 }
 
 int main(int argc, char **argv) {
 	char *name = argv[0] ? argv[0] : "pageinfo";
+	char *pid = NULL;
 	bool hack = false;
-	int pid = 0;
 	long tmp;
 	char *endp;
 	unsigned long addr;
@@ -267,16 +264,17 @@ int main(int argc, char **argv) {
 		usage_exit(name);
 
 	if (argc == 3) {
-		errno = 0;
-		tmp = strtol(argv[1], &endp, 10);
+		pid = argv[1];
 
-		if (endp == argv[1] || *endp != '\0' || errno == ERANGE
-			|| tmp < -1 || tmp == 0 || tmp > INT_MAX) {
-			fputs("Invalid PID!\n", stderr);
-			return 1;
+		if (strcmp(pid, "self")) {
+			errno = 0;
+			tmp = strtol(pid, &endp, 10);
+
+			if (endp == pid || *endp != '\0' || errno == ERANGE || tmp < 1 || tmp > INT_MAX) {
+				fputs("Invalid PID!\n", stderr);
+				return 1;
+			}
 		}
-
-		pid = tmp;
 	}
 
 	errno = 0;
