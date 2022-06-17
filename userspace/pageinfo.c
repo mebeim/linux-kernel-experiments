@@ -1,9 +1,25 @@
 /**
- * Dump human readable info from /proc/[pid]/pagemap and/or /proc/kpageflags
- * given a PID and a virtual address OR a physical address.
+ * Dump human readable info from /proc/[pid]/pagemap, /proc/kpageflags and
+ * /proc/kpagecount given a PID and a virtual address OR a physical address.
  *
- * NOTE: refer to `man 5 procfs` for the validity of the bits, some of them only
- *       have a meaning under recent Linux versions.
+ * NOTE: Refer to `man 5 procfs` for the validity of the bits, some of them only
+ *       have a meaning under recent Linux versions. Refer to
+ *       Documentation/admin-guide/mm/pagemap.rst for the meaning of the bits.
+ * NOTE: Undocumented KPF_* flags available for "kernel hacking assistance"
+ *       should not be relied upon: check source for the running kernel's
+ *       version to make sure they are correct.
+ *
+ * Changelog:
+ *
+ * v0.3: Support self-inspection passing -1 as pid. Support KPF_PGTABLE, plus
+ *       undocumented KPF flags available for "kernel hacking assistance".
+ *       Report number of times a page is mapped, obtained through
+ *       /proc/kpagecount. Fix wrong calculation of file offset when reading
+ *       pagemap.
+ * v0.2: Support more flags from /proc/[pid]/pagemap and also dump flags from
+ *       /proc/kpageflags. Support physical addresses (no PID specified).
+ * v0.1: Initial version, only reading /proc/[pid]/pagemap.
+ *
  */
 
 #define _XOPEN_SOURCE 500
@@ -35,6 +51,7 @@
 
 #define PM_FLAGS (PM_PRESENT|PM_SWAP|PM_FILE|PM_UFFD_WP|PM_MMAP_EXCLUSIVE|PM_SOFT_DIRTY)
 
+// include/uapi/linux/kernel-page-flags.h
 #define KPF_LOCKED        (1UL << 0 )
 #define KPF_ERROR         (1UL << 1 )
 #define KPF_REFERENCED    (1UL << 2 )
@@ -61,8 +78,26 @@
 #define KPF_BALLOON       (1UL << 23) // since Linux 3.18
 #define KPF_ZERO_PAGE     (1UL << 24) // since Linux 4.0
 #define KPF_IDLE          (1UL << 25) // since Linux 4.3
+#define KPF_PGTABLE       (1UL << 26) // since Linux 4.18
+#define KPF_FLAGS         ((KPF_PGTABLE << 1) - 1)
 
-#define KPF_FLAGS ((1UL << 26) - 1)
+/*
+ * Undocumented flags for "kernel hacking assistance". You should check the
+ * running kernel source before using these. Available behind "hack" command
+ * line argument.
+ */
+// include/linux/kernel-page-flags.h
+#define KPF_RESERVED      (1UL << 32)
+#define KPF_MLOCKED       (1UL << 33)
+#define KPF_MAPPEDTODISK  (1UL << 34)
+#define KPF_PRIVATE       (1UL << 35)
+#define KPF_PRIVATE_2     (1UL << 36)
+#define KPF_OWNER_PRIVATE (1UL << 37)
+#define KPF_ARCH          (1UL << 38)
+#define KPF_UNCACHED      (1UL << 39)
+#define KPF_SOFTDIRTY     (1UL << 40)
+#define KPF_ARCH_2        (1UL << 41)
+#define KPF_HACK_FLAGS    (((KPF_ARCH_2 << 1) - 1) & ~(KPF_RESERVED - 1))
 
 unsigned long read_ulong_at_offset(const char *path, off_t offset) {
 	int fd;
@@ -92,8 +127,12 @@ unsigned long read_ulong_at_offset(const char *path, off_t offset) {
 
 unsigned long read_pagemap(int pid, unsigned long vaddr) {
 	char path[128];
+
+	if (pid == -1)
+		return read_ulong_at_offset("/proc/self/pagemap", (vaddr >> PAGE_SHIFT) * 8);
+
 	sprintf(path, "/proc/%d/pagemap", pid);
-	return read_ulong_at_offset(path, vaddr >> 9);
+	return read_ulong_at_offset(path, (vaddr >> PAGE_SHIFT) * 8);
 }
 
 void dump_pagemap(unsigned long pm, unsigned long vaddr) {
@@ -128,12 +167,14 @@ void dump_pagemap(unsigned long pm, unsigned long vaddr) {
 	putchar('\n');
 }
 
-void dump_kpageflags(unsigned long pfn, bool spacing) {
-	unsigned long kpf = read_ulong_at_offset("/proc/kpageflags", pfn << 3);
+void dump_kpageflags_kpagecount(unsigned long pfn, bool hack, bool spacing) {
+	unsigned long kpf   = read_ulong_at_offset("/proc/kpageflags", pfn * 8);
+	unsigned long count = read_ulong_at_offset("/proc/kpagecount", pfn * 8);
+	unsigned long mask  = KPF_FLAGS | (hack * KPF_HACK_FLAGS);
 
 	printf("/proc/kpageflags%s: 0x%016lx =", spacing ? "   " : "", kpf);
 
-	if (kpf & KPF_FLAGS) {
+	if (kpf & mask) {
 		if (kpf & KPF_LOCKED       ) fputs(" LOCKED"       , stdout);
 		if (kpf & KPF_ERROR        ) fputs(" ERROR"        , stdout);
 		if (kpf & KPF_REFERENCED   ) fputs(" REFERENCED"   , stdout);
@@ -160,15 +201,28 @@ void dump_kpageflags(unsigned long pfn, bool spacing) {
 		if (kpf & KPF_BALLOON      ) fputs(" BALLOON"      , stdout);
 		if (kpf & KPF_ZERO_PAGE    ) fputs(" ZERO_PAGE"    , stdout);
 		if (kpf & KPF_IDLE         ) fputs(" IDLE"         , stdout);
+
+		if (hack && (kpf & KPF_HACK_FLAGS)) {
+			fputs((kpf & KPF_FLAGS) ? " | hack:" : " hack:", stdout);
+			if (kpf & KPF_RESERVED     ) fputs(" RESERVED"     , stdout);
+			if (kpf & KPF_MLOCKED      ) fputs(" MLOCKED"      , stdout);
+			if (kpf & KPF_MAPPEDTODISK ) fputs(" MAPPEDTODISK" , stdout);
+			if (kpf & KPF_PRIVATE      ) fputs(" PRIVATE"      , stdout);
+			if (kpf & KPF_PRIVATE_2    ) fputs(" PRIVATE_2"    , stdout);
+			if (kpf & KPF_OWNER_PRIVATE) fputs(" OWNER_PRIVATE", stdout);
+			if (kpf & KPF_ARCH         ) fputs(" ARCH"         , stdout);
+			if (kpf & KPF_UNCACHED     ) fputs(" UNCACHED"     , stdout);
+			if (kpf & KPF_SOFTDIRTY    ) fputs(" SOFTDIRTY"    , stdout);
+			if (kpf & KPF_ARCH_2       ) fputs(" ARCH_2"       , stdout);
+		}
 	} else {
-		fputs(" no flags set, page does not exist?\n", stdout);
-		_exit(1);
+		fputs(" no known flags set", stdout);
 	}
 
-	putchar('\n');
+	printf("\n/proc/kpagecount%s: %ld\n", spacing ? "   " : "", count);
 }
 
-void dump_page_info(int pid, unsigned long addr) {
+void dump_page_info(int pid, unsigned long addr, bool hack) {
 	unsigned long pm;
 
 	printf("%caddr: 0x%lx, page: 0x%lx\n", pid ? 'V' : 'P', addr, addr & PAGE_MASK);
@@ -179,30 +233,45 @@ void dump_page_info(int pid, unsigned long addr) {
 		dump_pagemap(pm, addr);
 
 		if (pm & PM_PRESENT)
-			dump_kpageflags(pm & PM_PFRAME_MASK, true);
+			dump_kpageflags_kpagecount(pm & PM_PFRAME_MASK, hack, true);
 	} else {
 		// addr is physical
-		dump_kpageflags(addr >> PAGE_SHIFT, false);
+		dump_kpageflags_kpagecount(addr >> PAGE_SHIFT, hack, false);
 	}
 }
 
+void usage_exit(const char *name) {
+	fprintf(stderr, "Usage: %s PID VADDR [hack]\n", name);
+	fprintf(stderr, "       %s -1 VADDR [hack]\n", name);
+	fprintf(stderr, "       %s PADDR [hack]\n", name);
+	exit(1);
+}
+
 int main(int argc, char **argv) {
+	char *name = argv[0] ? argv[0] : "pageinfo";
+	bool hack = false;
 	int pid = 0;
 	long tmp;
 	char *endp;
 	unsigned long addr;
 
-	if (argc != 2 && argc != 3) {
-		fprintf(stderr, "Usage: %s PID VADDR\n", argv[0] ? argv[0] : "pageinfo");
-		fprintf(stderr, "       %s PADDR\n", argv[0] ? argv[0] : "pageinfo");
-		return 1;
+	if (argc > 4)
+		usage_exit(name);
+
+	if (argc >= 3 && !strcmp(argv[argc - 1], "hack")) {
+		hack = true;
+		argc--;
 	}
+
+	if (argc != 2 && argc != 3)
+		usage_exit(name);
 
 	if (argc == 3) {
 		errno = 0;
 		tmp = strtol(argv[1], &endp, 10);
 
-		if (endp == argv[1] || *endp != '\0' || errno == ERANGE || tmp <= 0 || tmp > INT_MAX) {
+		if (endp == argv[1] || *endp != '\0' || errno == ERANGE
+			|| tmp < -1 || tmp == 0 || tmp > INT_MAX) {
 			fputs("Invalid PID!\n", stderr);
 			return 1;
 		}
@@ -218,6 +287,6 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
-	dump_page_info(pid, addr);
+	dump_page_info(pid, addr, hack);
 	return 0;
 }
