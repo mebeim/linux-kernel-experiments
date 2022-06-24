@@ -15,6 +15,10 @@
  *
  * Changelog:
  *
+ * v0.9: Correctly handle 1G huge pages rewriting bogus pud_ helpers. Correctly
+ *       handle PROTNONE at all levels. Invert PROTNONE entries when needed.
+ *       Dump more interesting macros (PHYSICAL_PAGE_*_MASK). Thanks to the
+ *       people over at #mm on irc.oftc.net (linux-mm.org) for clarifications.
  * v0.8: Detect swapped pages and dump swap entries, use {pud,pmd}_large()
  *       instead of _huge() to detect huge pages.
  * v0.7: Print correct paddr for huge pages, detect PROTNONE pages.
@@ -42,6 +46,7 @@
 #include <asm/special_insns.h>   // r/w control regs
 #include <asm/processor-flags.h> // control regs flags
 #include <asm/io.h>              // phys_to_virt()
+#include <asm/pgtable-invert.h>  // __pte_needs_invert()
 
 #ifdef pr_fmt
 #undef pr_fmt
@@ -83,26 +88,55 @@ static inline int rdmsrl_wrap(const char *name, int msrno,
 
 static void dump_macros(void)
 {
-	pr_info("PGDIR_SHIFT   = %d\n", PGDIR_SHIFT);
-	pr_info("P4D_SHIFT     = %d\n", P4D_SHIFT);
-	pr_info("PUD_SHIFT     = %d\n", PUD_SHIFT);
-	pr_info("PMD_SHIFT     = %d\n", PMD_SHIFT);
-	pr_info("PAGE_SHIFT    = %d\n", PAGE_SHIFT);
-	pr_info("PTRS_PER_PGD  = %d\n", PTRS_PER_PGD);
-	pr_info("PTRS_PER_P4D  = %d\n", PTRS_PER_P4D);
-	pr_info("PTRS_PER_PUD  = %d\n", PTRS_PER_PUD);
-	pr_info("PTRS_PER_PMD  = %d\n", PTRS_PER_PMD);
-	pr_info("PTRS_PER_PTE  = %d\n", PTRS_PER_PTE);
-	pr_info("PGDIR_MASK    = 0x%016lx\n", PGDIR_MASK);
-	pr_info("P4D_MASK      = 0x%016lx\n", P4D_MASK);
-	pr_info("PUD_MASK      = 0x%016lx\n", PUD_MASK);
-	pr_info("PMD_MASK      = 0x%016lx\n", PMD_MASK);
-	pr_info("PAGE_MASK     = 0x%016lx\n", PAGE_MASK);
-	pr_info("PUD_PAGE_MASK = 0x%016lx\n", PUD_PAGE_MASK);
-	pr_info("PMD_PAGE_MASK = 0x%016lx\n", PMD_PAGE_MASK);
-	pr_info("PTE_PFN_MASK  = 0x%016lx\n", PTE_PFN_MASK);
-	pr_info("PAGE_OFFSET   = 0x%016lx\n", PAGE_OFFSET);
+	pr_info("PGDIR_SHIFT            = %d\n", PGDIR_SHIFT);
+	pr_info("P4D_SHIFT              = %d\n", P4D_SHIFT);
+	pr_info("PUD_SHIFT              = %d\n", PUD_SHIFT);
+	pr_info("PMD_SHIFT              = %d\n", PMD_SHIFT);
+	pr_info("PAGE_SHIFT             = %d\n", PAGE_SHIFT);
+	pr_info("PTRS_PER_PGD           = %d\n", PTRS_PER_PGD);
+	pr_info("PTRS_PER_P4D           = %d\n", PTRS_PER_P4D);
+	pr_info("PTRS_PER_PUD           = %d\n", PTRS_PER_PUD);
+	pr_info("PTRS_PER_PMD           = %d\n", PTRS_PER_PMD);
+	pr_info("PTRS_PER_PTE           = %d\n", PTRS_PER_PTE);
+	pr_info("PGDIR_MASK             = 0x%016lx\n", PGDIR_MASK);
+	pr_info("P4D_MASK               = 0x%016lx\n", P4D_MASK);
+	pr_info("PUD_MASK               = 0x%016lx\n", PUD_MASK);
+	pr_info("PMD_MASK               = 0x%016lx\n", PMD_MASK);
+	pr_info("PAGE_MASK              = 0x%016lx\n", PAGE_MASK);
+	pr_info("PMD_PAGE_MASK          = 0x%016lx\n", PMD_PAGE_MASK);
+	pr_info("PUD_PAGE_MASK          = 0x%016lx\n", PUD_PAGE_MASK);
+	pr_info("PHYSICAL_PAGE_MASK     = 0x%016lx\n", (unsigned long)PHYSICAL_PAGE_MASK);
+	pr_info("PHYSICAL_PMD_PAGE_MASK = 0x%016lx\n", (unsigned long)PHYSICAL_PMD_PAGE_MASK);
+	pr_info("PHYSICAL_PUD_PAGE_MASK = 0x%016lx\n", (unsigned long)PHYSICAL_PUD_PAGE_MASK);
+	pr_info("PTE_PFN_MASK           = 0x%016lx\n", PTE_PFN_MASK);
+	pr_info("PAGE_OFFSET            = 0x%016lx\n", PAGE_OFFSET);
 }
+
+/* Fix some pud-related helpers to behave correctly with 1G huge pages */
+
+#define pud_present pud_present_good
+static inline int pud_present_good(pud_t pud)
+{
+	/*
+	 * NOTE: this might need change if 1G THPs become available because
+	 * split_huge_page temporarily clears the present bit, but the _PAGE_PSE
+	 * bit remains set at all times while the _PAGE_PRESENT bit is clear.
+	 * So in such case the check should become:
+	 *
+	 *     pud_flags(pud) & (_PAGE_PRESENT | _PAGE_PROTNONE | _PAGE_PSE)
+	 *
+	 * See comment above pmd_present() at arch/x86/include/asm/pgtable.h.
+	 */
+	return pud_flags(pud) & (_PAGE_PRESENT | _PAGE_PROTNONE);
+}
+
+#define pud_large pud_large_good
+static inline int pud_large_good(pud_t pud)
+{
+	return pud_flags(pud) & _PAGE_PSE;
+}
+
+/* Helpers for easy paddr calculation */
 
 static inline unsigned long pud_paddr(pud_t pud, unsigned long vaddr)
 {
@@ -124,6 +158,22 @@ static inline bool is_zero_page_pte(pte_t pte)
 	return pte_pfn(pte) == page_to_pfn(ZERO_PAGE(0));
 }
 
+/**
+ * The PFN for PROTNONE entries is inverted to stop speculation (L1TF
+ * mitigation). If we want the actual {pte,pmd,pud}_val() we need to invert when
+ * needed. See arch/x86/include/asm/pgtable-invert.h.
+ */
+static inline u64 invert_val_if_needed(u64 val)
+{
+	/*
+	 * Actually, a bit more than the PFN is inverted, don't know exactly
+	 * why. The inversion seems to be done with PHYSICAL_PAGE_MASK
+	 * regardless of level.
+	 */
+	const u64 mask = PHYSICAL_PAGE_MASK;
+	return __pte_needs_invert(val) ? ((val & ~mask) | (~val & mask)) : val;
+}
+
 static void dump_flags_common(unsigned long val)
 {
 	if (val & _PAGE_PRESENT ) pr_cont(" PRESENT");
@@ -135,25 +185,28 @@ static void dump_flags_common(unsigned long val)
 	if (val & _PAGE_ACCESSED) pr_cont(" ACCESSED");
 }
 
-// TODO: move PROTNONE check here since it should be the same at all levels?
-static void dump_flags_last_level(unsigned long val, bool protnone, bool pke)
+static void dump_flags_last_level(unsigned long val, bool pke)
 {
 	/*
 	 * Pages with no permissions have the PRESENT bit clear and the PROTNONE
-	 * bit set. PROTNONE and GLOBAL are the same bit.
+	 * bit set. PROTNONE and GLOBAL are the same bit. The check for PROTNONE
+	 * is ((val & (_PAGE_PRESENT|_PAGE_PROTNONE)) == _PAGE_PROTNONE) and
+	 * should be the same for leaf entries at all levels (pte, pmd, pud).
 	 */
 	static_assert(_PAGE_GLOBAL == _PAGE_PROTNONE);
 
-	if (val & _PAGE_DIRTY      ) pr_cont(" DIRTY");
-	if (protnone)                pr_cont(" PROTNONE");
-	else if (val & _PAGE_GLOBAL) pr_cont(" GLOBAL");
+	if (val & _PAGE_DIRTY          ) pr_cont(" DIRTY");
+	if (val & _PAGE_PROTNONE) {
+		if (val & _PAGE_PRESENT) pr_cont(" GLOBAL");
+		else                     pr_cont(" PROTNONE");
+	}
 #ifdef CONFIG_HAVE_ARCH_USERFAULTFD_WP
-	if (val & _PAGE_UFFD_WP    ) pr_cont(" UFFD_WP");
+	if (val & _PAGE_UFFD_WP        ) pr_cont(" UFFD_WP");
 #endif
 #ifdef CONFIG_MEM_SOFT_DIRTY
-	if (val & _PAGE_SOFT_DIRTY ) pr_cont(" SOFT_DIRTY");
+	if (val & _PAGE_SOFT_DIRTY     ) pr_cont(" SOFT_DIRTY");
 #endif
-	if (val & _PAGE_NX         ) pr_cont(" NX");
+	if (val & _PAGE_NX             ) pr_cont(" NX");
 
 	if (pke)
 		pr_cont(" PKEY=%lx",
@@ -219,19 +272,10 @@ static bool dump_p4d(p4d_t p4d, unsigned long vaddr)
 
 static bool dump_pud(pud_t pud, unsigned long vaddr, bool pke)
 {
-	pudval_t val = pud_val(pud);
+	pudval_t val = invert_val_if_needed(pud_val(pud));
 
 	pr_info("pud: idx %03lx val %016lx", pud_index(vaddr), val);
 
-	/*
-	 * FIXME: what's the deal with pud_present()? It returns false for
-	 * anonymous 1G MAP_HUGETLB pages which were modified and then
-	 * mprotect'd to 0. It seems to only check _PAGE_PRESENT and not
-	 * _PAGE_PROTNONE like {pmd,pte}_present() do.
-	 *
-	 * /proc/[pid]/pagemap seems to use pte_present() on the pud (see
-	 * fs/proc/task_mmu.c:1536 at v5.17)
-	 */
 	if (!pud_present(pud)) {
 		pr_cont(" not present\n");
 		return true;
@@ -239,22 +283,12 @@ static bool dump_pud(pud_t pud, unsigned long vaddr, bool pke)
 
 	dump_flags_common((unsigned long)val);
 
-	/*
-	 * FIXME: is this correct? Why doesn't pud_large() work when "fixing"
-	 * the pud_present() check above to check _PAGE_PRESENT|_PAGE_PROTNONE???
-	 * When PROTNONE and not PRESENT, pud_large() returns false... weird.
-	 */
 	if (pud_large(pud)) {
 		pr_cont(" 1G");
 		if (val & _PAGE_PAT_LARGE)
 			pr_cont(" PAT");
 
-		/*
-		 * FIXME: there is no pud_protnone() function, but is it true that a pud
-		 * cannot be PROTNONE? Clearly not, as tested and as the above comment
-		 * on the !pud_present(pud) check explains.
-		 */
-		dump_flags_last_level((unsigned long)val, false, pke);
+		dump_flags_last_level((unsigned long)val, pke);
 		pr_cont("\n");
 		dump_paddr(pud_paddr(pud, vaddr), false);
 		return true;
@@ -266,7 +300,7 @@ static bool dump_pud(pud_t pud, unsigned long vaddr, bool pke)
 
 static bool dump_pmd(pmd_t pmd, unsigned long vaddr, bool pke)
 {
-	pmdval_t val = pmd_val(pmd);
+	pmdval_t val = invert_val_if_needed(pmd_val(pmd));
 
 	pr_info("pmd: idx %03lx val %016lx", pmd_index(vaddr), val);
 
@@ -301,7 +335,7 @@ static bool dump_pmd(pmd_t pmd, unsigned long vaddr, bool pke)
 		if (val & _PAGE_PAT_LARGE)
 			pr_cont(" PAT");
 
-		dump_flags_last_level((unsigned long)val, pmd_protnone(pmd), pke);
+		dump_flags_last_level((unsigned long)val, pke);
 		pr_cont("\n");
 
 		/*
@@ -322,11 +356,8 @@ static bool dump_pmd(pmd_t pmd, unsigned long vaddr, bool pke)
 
 static void dump_pte(pte_t pte, unsigned long vaddr, bool pke)
 {
-	pteval_t val;
-	static_assert(sizeof(pteval_t) == sizeof(unsigned long));
+	pteval_t val = invert_val_if_needed(pte_val(pte));
 
-	// TODO: when/why should I use pxx_flags(pxx)?
-	val = pte_val(pte);
 	pr_info("pte: idx %03lx val %016lx", pte_index(vaddr), val);
 
 	if (pte_none(pte)) {
@@ -347,7 +378,7 @@ static void dump_pte(pte_t pte, unsigned long vaddr, bool pke)
 	if (val & _PAGE_PAT)
 		pr_cont(" PAT");
 
-	dump_flags_last_level((unsigned long)val, pte_protnone(pte), pke);
+	dump_flags_last_level((unsigned long)val, pke);
 	pr_cont("\n");
 	dump_paddr(pte_paddr(pte, vaddr), is_zero_page_pte(pte));
 }
@@ -528,7 +559,7 @@ static int __init page_table_walk_init(void)
 }
 
 module_init(page_table_walk_init);
-MODULE_VERSION("0.8");
+MODULE_VERSION("0.9");
 MODULE_DESCRIPTION("Walk user/kernel page tables given a virtual address (plus"
 		   "PID for user page tables) and dump entries and flags");
 MODULE_AUTHOR("Marco Bonelli");
