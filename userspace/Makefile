@@ -1,5 +1,5 @@
 BINS = $(patsubst %.c,%,$(wildcard *.c))
-CFLAGS = -Wall -Wextra -pedantic -O3
+override CFLAGS += -Wall -Wextra -pedantic -O3
 
 .PHONY: all clean
 
