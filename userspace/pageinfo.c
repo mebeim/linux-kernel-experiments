@@ -11,6 +11,7 @@
  *
  * Changelog:
  *
+ * v0.3.2: Add KPF_ARCH_3 bit.
  * v0.3.1: Use "self" instead of -1 for self-inspection.
  * v0.3:   Support self-inspection passing -1 as pid. Support KPF_PGTABLE, plus
  *         undocumented KPF flags available for "kernel hacking assistance".
@@ -84,10 +85,9 @@
 
 /*
  * Undocumented flags for "kernel hacking assistance". You should check the
- * running kernel source before using these. Available behind "hack" command
- * line argument.
+ * running kernel source before using these (include/linux/kernel-page-flags.h).
+ * Available behind "hack" command line argument.
  */
-// include/linux/kernel-page-flags.h
 #define KPF_RESERVED      (1UL << 32)
 #define KPF_MLOCKED       (1UL << 33)
 #define KPF_MAPPEDTODISK  (1UL << 34)
@@ -98,7 +98,8 @@
 #define KPF_UNCACHED      (1UL << 39)
 #define KPF_SOFTDIRTY     (1UL << 40)
 #define KPF_ARCH_2        (1UL << 41)
-#define KPF_HACK_FLAGS    (((KPF_ARCH_2 << 1) - 1) & ~(KPF_RESERVED - 1))
+#define KPF_ARCH_3        (1UL << 42)
+#define KPF_HACK_FLAGS    (((KPF_ARCH_3 << 1) - 1) & ~(KPF_RESERVED - 1))
 
 unsigned long read_ulong_at_offset(const char *path, off_t offset) {
 	int fd;
@@ -211,6 +212,7 @@ void dump_kpageflags_kpagecount(unsigned long pfn, bool hack, bool spacing) {
 			if (kpf & KPF_UNCACHED     ) fputs(" UNCACHED"     , stdout);
 			if (kpf & KPF_SOFTDIRTY    ) fputs(" SOFTDIRTY"    , stdout);
 			if (kpf & KPF_ARCH_2       ) fputs(" ARCH_2"       , stdout);
+			if (kpf & KPF_ARCH_3       ) fputs(" ARCH_3"       , stdout);
 		}
 	} else {
 		fputs(" no known flags set", stdout);
