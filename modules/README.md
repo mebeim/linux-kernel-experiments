@@ -19,7 +19,7 @@ See "Building" section below for build instructions.
 | [`page_table_walk.c`](page_table_walk.c)           | Walk user/kernel page tables and dump entries given a virtual address      | 5.10, 5.17, 6.12      | -                                            |
 | [`read_implies_exec.c`](read_implies_exec.c)       | Restore old kernel read-implies-exec behavior via a kprobes hack           | 6.12                  | [79249161][q79249161]                        |
 | [`reboot_notifier.c`](reboot_notifier.c)           | Test waiting for a critical job (kthread) to finish before poweroff/reboot | 5.10                  | [64670766][q64670766]                        |
-| [`task_bfs_dfs.c`](task_bfs_dfs.c)                 | Iterate over a task's children tree using BFS or DFS                       | 5.10, 5.17            | [19208487][q19208487], [61201560][q61201560] |
+| [`task_bfs_dfs.c`](task_bfs_dfs.c)                 | Iterate and dump a task's children tree using BFS or DFS                   | 5.10, 5.17, 6.8       | [19208487][q19208487], [61201560][q61201560] |
 | [`task_rss.c`](task_rss.c)                         | Calculare task RSS of all running tasks                                    | 5.6, 5.10, 5.17       | [67224020][q67224020]                        |
 | [`task_rss_from_pid.c`](task_rss_from_pid.c)       | Calculare task RSS given an userspace PID                                  | 5.6, 5.10, 5.17       | [67224020][q67224020]                        |
 | [`test_chardev.c`](test_chardev.c)                 | Test character device kernel APIs                                          | 5.8, 5.10             | -                                            |
