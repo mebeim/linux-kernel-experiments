@@ -14,7 +14,7 @@
 
 static int __init modinit(void) {
 	// fail insert to make testing faster (no need to rmmod)
-	return 1;
+	return -ECANCELED;
 }
 
 static void __exit modexit(void)
