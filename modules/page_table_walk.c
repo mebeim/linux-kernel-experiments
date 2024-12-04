@@ -3,11 +3,11 @@
  * Walk user/kernel page tables given a virtual address (plus PID for user page
  * tables) and find the physical address, printing values/offsets/flags of the
  * entries for each page table level. With dump=1 just dump the values of useful
- * page table macros and exit. This module was written for x86_64. The
+ * page table macros and exit. This module is written for x86_64. The
  * correspondence between page table types and Intel doc is: pgd=PML5E,
  * p4d=PML4E, pud=PDPTE, pmd=PDE, pte=PTE.
  *
- * Tested on kernel 5.10, 5.17.
+ * Tested on kernel 5.10, 5.17, 6.12.
  *
  * Usage: sudo insmod page_table_walk.ko pid=123 vaddr=0x1234  # user
  *        sudo insmod page_table_walk.ko pid=0 vaddr=0x1234    # kernel
@@ -15,6 +15,7 @@
  *
  * Changelog:
  *
+ * v0.10: Fix page table macros/helpers for latest kernels.
  * v0.9: Correctly handle 1G huge pages rewriting bogus pud_ helpers. Correctly
  *       handle PROTNONE at all levels. Invert PROTNONE entries when needed.
  *       Dump more interesting macros (PHYSICAL_PAGE_*_MASK). Thanks to the
@@ -41,6 +42,7 @@
 #include <linux/sched/mm.h>      // mmget(), mmput()
 #include <linux/swap.h>          // needed by linux/swapops.h
 #include <linux/swapops.h>       // swp_{type,offset}(), p{md,te}_to_swp_entry()
+#include <linux/version.h>       // LINUX_VERSION_CODE, KERNEL_VERSION
 #include <asm/msr-index.h>       // MSR defines
 #include <asm/msr.h>             // r/w MSR funcs/macros
 #include <asm/special_insns.h>   // r/w control regs
@@ -64,6 +66,13 @@ MODULE_PARM_DESC(vaddr, "Virtual address to use for page table walk");
 static bool dump;
 module_param_named(dump, dump, bool, 0);
 MODULE_PARM_DESC(dump, "Just dump page table related macros and exit");
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,2,0)
+#undef PMD_MASK
+#undef PUD_MASK
+#define PMD_MASK PMD_PAGE_MASK
+#define PUD_MASK PUD_PAGE_MASK
+#endif
 
 /**
  * Find task_struct given **userspace** PID.
@@ -103,8 +112,6 @@ static void dump_macros(void)
 	pr_info("PUD_MASK               = 0x%016lx\n", PUD_MASK);
 	pr_info("PMD_MASK               = 0x%016lx\n", PMD_MASK);
 	pr_info("PAGE_MASK              = 0x%016lx\n", PAGE_MASK);
-	pr_info("PMD_PAGE_MASK          = 0x%016lx\n", PMD_PAGE_MASK);
-	pr_info("PUD_PAGE_MASK          = 0x%016lx\n", PUD_PAGE_MASK);
 	pr_info("PHYSICAL_PAGE_MASK     = 0x%016lx\n", (unsigned long)PHYSICAL_PAGE_MASK);
 	pr_info("PHYSICAL_PMD_PAGE_MASK = 0x%016lx\n", (unsigned long)PHYSICAL_PMD_PAGE_MASK);
 	pr_info("PHYSICAL_PUD_PAGE_MASK = 0x%016lx\n", (unsigned long)PHYSICAL_PUD_PAGE_MASK);
@@ -114,7 +121,6 @@ static void dump_macros(void)
 
 /* Fix some pud-related helpers to behave correctly with 1G huge pages */
 
-#define pud_present pud_present_good
 static inline int pud_present_good(pud_t pud)
 {
 	/*
@@ -130,22 +136,16 @@ static inline int pud_present_good(pud_t pud)
 	return pud_flags(pud) & (_PAGE_PRESENT | _PAGE_PROTNONE);
 }
 
-#define pud_large pud_large_good
-static inline int pud_large_good(pud_t pud)
-{
-	return pud_flags(pud) & _PAGE_PSE;
-}
-
 /* Helpers for easy paddr calculation */
 
 static inline unsigned long pud_paddr(pud_t pud, unsigned long vaddr)
 {
-	return (pud_pfn(pud) << PAGE_SHIFT) | (vaddr & ~PUD_PAGE_MASK);
+	return (pud_pfn(pud) << PAGE_SHIFT) | (vaddr & ~PUD_MASK);
 }
 
 static inline unsigned long pmd_paddr(pmd_t pmd, unsigned long vaddr)
 {
-	return (pmd_pfn(pmd) << PAGE_SHIFT) | (vaddr & ~PMD_PAGE_MASK);
+	return (pmd_pfn(pmd) << PAGE_SHIFT) | (vaddr & ~PMD_MASK);
 }
 
 static inline unsigned long pte_paddr(pte_t pte, unsigned long vaddr)
@@ -276,14 +276,14 @@ static bool dump_pud(pud_t pud, unsigned long vaddr, bool pke)
 
 	pr_info("pud: idx %03lx val %016lx", pud_index(vaddr), val);
 
-	if (!pud_present(pud)) {
+	if (!pud_present_good(pud)) {
 		pr_cont(" not present\n");
 		return true;
 	}
 
 	dump_flags_common((unsigned long)val);
 
-	if (pud_large(pud)) {
+	if (pud_leaf(pud)) {
 		pr_cont(" 1G");
 		if (val & _PAGE_PAT_LARGE)
 			pr_cont(" PAT");
@@ -324,13 +324,7 @@ static bool dump_pmd(pmd_t pmd, unsigned long vaddr, bool pke)
 
 	dump_flags_common((unsigned long)val);
 
-	/*
-	 * pmd_huge() "returns 1 if @pmd is hugetlb related entry, that is
-	 * normal hugetlb entry or non-present (migration or hwpoisoned) hugetlb
-	 * entry" (where I suppose "hugetlb entry" means MAP_HUGETLB)... so we
-	 * want pmd_large() here.
-	 */
-	if (pmd_large(pmd)) {
+	if (pmd_leaf(pmd)) {
 		pr_cont(" 2M");
 		if (val & _PAGE_PAT_LARGE)
 			pr_cont(" PAT");
@@ -559,7 +553,7 @@ static int __init page_table_walk_init(void)
 }
 
 module_init(page_table_walk_init);
-MODULE_VERSION("0.9");
+MODULE_VERSION("0.10");
 MODULE_DESCRIPTION("Walk user/kernel page tables given a virtual address (plus"
 		   "PID for user page tables) and dump entries and flags");
 MODULE_AUTHOR("Marco Bonelli");
